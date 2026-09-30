@@ -1,0 +1,28 @@
+# The Python environment, and uv's cache, Python and Hugging Face download
+# cache, which setup.ps1 and fetch-model.ps1 keep inside the repo.
+/.venv/
+/.uv/
+
+# Models: gigabytes, and fetched or linked per machine. Only the README.txt files are committed.
+/models/**
+!/models/
+!/models/README.txt
+!/models/*/
+!/models/*/README.txt
+
+# The user's own settings, and runtime output.
+/volis.toml
+/pyvolis.toml
+/logs/
+/cache/
+/exports/
+
+# This machine's paths (see machine.example.yaml), and the parity work folder.
+/machine.yaml
+/parity/.rust/
+
+# Test recordings: voices, not code.
+/tests/fixtures/
+
+__pycache__/
+.pytest_cache/

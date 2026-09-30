@@ -1,0 +1,5 @@
+# This machine's paths, for the parity checks. Copy to machine.yaml (not committed).
+
+# The Rust volis.exe to compare against. parity\ hard-links it into parity\.rust\,
+# so it must be on the same drive as this repository.
+volis_exe: 'D:\AI_Data\projects\volis\target\release\volis.exe'

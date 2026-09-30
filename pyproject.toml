@@ -1,0 +1,61 @@
+[project]
+name = "pyvolis"
+version = "0.1.0"
+description = "Offline speech-to-speech translation: the Python volis, with drop-in models."
+# torch, sherpa-onnx and PySide6 all publish wheels for 3.12 (model-converter
+# made the same choice for the same reason).
+requires-python = "==3.12.*"
+dependencies = [
+    "numpy",
+    "tomlkit",
+    # Model cards' front matter (`language:`) is YAML. Already required by
+    # huggingface_hub; named here because pyvolis imports it directly.
+    "pyyaml",
+    "sherpa-onnx==1.13.8",
+    # sherpa-onnx's wheels require this, but its sdist declares no
+    # dependencies and uv locks from the sdist's metadata, so without this line
+    # it is silently left out. It puts onnxruntime.dll (1.28.2, the version
+    # Rust volis links) beside sherpa-onnx's extension. Without it sherpa-onnx
+    # finds the old onnxruntime.dll in System32 and crashes.
+    "sherpa-onnx-core==1.13.8",
+    "torch",
+    # 5.4 is the first with CohereAsrForConditionalGeneration.
+    "transformers>=5.4",
+    "huggingface_hub",
+    "peft",
+    "PySide6",
+    "sounddevice",
+    "soxr",
+    "av",
+    # llama-cpp-python is added at P3, after its CUDA build is verified.
+]
+
+[project.scripts]
+pyvolis = "pyvolis.__main__:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["uv_build>=0.11.26,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.uv]
+# Every machine resolves and installs the same way.
+required-version = ">=0.11.26,<0.12"
+
+# CUDA 12.8 build: the RTX 5090 (Blackwell) needs 12.8 or newer, and it runs
+# on the 4070 too.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
