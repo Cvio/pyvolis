@@ -9,7 +9,7 @@ Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   `fetch-model.ps1`, `parity\report.py`, and the offline test.
 - **P1 done:** `--devices` (identical to Rust's output), microphone capture (`audio.py`), the
   file source (`filesource.py`, PyAV), Silero VAD with the pre-roll (`vad.py`), `pyvolis.toml`
-  with `[vad].pre_roll_ms`, `testsetch-fixtures.ps1`, and `scriptsad_cuts.py` (cut points
+  with `[vad].pre_roll_ms`, `tests\fetch-fixtures.ps1`, and `scripts\vad_cuts.py` (cut points
   with and without the pre-roll, from a file, the fixtures or the microphone).
 - Next: P2 (ASR backends: sherpa and transformers, `--compare`, hallucination guards). Wait for
   the go-ahead.
@@ -46,12 +46,11 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
    warns when there are two at the top.
 4. **A GGUF with no chat template is listed as unusable,** because pyvolis builds prompts from the
    model's own template (Rust hardcodes Qwen's). The Qwen3 file Rust uses has one.
-5. **`--devices`, `--listen` and the window** don't exist yet; they arrive at P1, P2 and P5. With
-   no arguments pyvolis says the window arrives at P5.
+5. **`--listen` and the window** don't exist yet; they arrive at P2 and P5. With no arguments
+   pyvolis says the window arrives at P5.
 6. **Logs** go to `logs\pyvolis.log.<date>` (Rust: `volis.log.<date>`), plus `logs\doctor.json`.
 7. **Varieties error message** names both `pyvolis/varieties.py` and Rust's `src/varieties.rs`,
    because the tables must stay the same (a test pins pyvolis's to Rust's).
-
 8. **Devices are PortAudio's WASAPI list** (sounddevice). cpal's default Windows host is WASAPI,
    so names and order match Rust's; the "F32" in each device line is assumed (WASAPI shared
    mode always delivers float32), where cpal asks the device.

@@ -75,9 +75,9 @@ pre_roll_ms = 600   # audio kept from before each utterance; 0 = off
 
 ```powershell
 .\.venv\Scripts\python.exe -m pyvolis --devices        # names for [audio] in volis.toml
-.	estsetch-fixtures.ps1                               # test clips (development)
-.\.venv\Scripts\python.exe scriptsad_cuts.py --wav   # cut points with and without pre-roll
-.\.venv\Scripts\python.exe scriptsad_cuts.py --mic 20 --wav
+.\tests\fetch-fixtures.ps1                               # test clips (development)
+.\.venv\Scripts\python.exe scripts\vad_cuts.py --wav   # cut points with and without pre-roll
+.\.venv\Scripts\python.exe scripts\vad_cuts.py --mic 20 --wav
 ```
 
 ## Checking against Rust volis
