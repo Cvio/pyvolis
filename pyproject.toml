@@ -27,6 +27,8 @@ dependencies = [
     "sounddevice",
     "soxr",
     "av",
+    # transformers' Cohere Transcribe feature extractor requires it.
+    "librosa",
     # llama-cpp-python is added at P3, after its CUDA build is verified.
 ]
 

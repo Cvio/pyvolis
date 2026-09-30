@@ -112,6 +112,9 @@ def offline_environment(root: Path) -> dict[str, str]:
         "TRITON_CACHE_DIR": str(cache / "triton"),
         # The CUDA driver's JIT cache defaults to %APPDATA%\NVIDIA\ComputeCache.
         "CUDA_CACHE_PATH": str(cache / "nvidia"),
+        # numba (through librosa) caches compiled functions beside the code or
+        # in the user profile; keep them here.
+        "NUMBA_CACHE_DIR": str(cache / "numba"),
         # Anything that follows the XDG convention.
         "XDG_CACHE_HOME": str(cache),
     }

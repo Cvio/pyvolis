@@ -42,5 +42,5 @@ def test_every_cache_a_library_might_use_is_inside_the_app():
     root = Path(r"X:\somewhere\pyvolis")
     env = paths.offline_environment(root)
     assert env["HF_HUB_OFFLINE"] == env["TRANSFORMERS_OFFLINE"] == env["HF_DATASETS_OFFLINE"] == "1"
-    for key in ("HF_HOME", "TORCH_HOME", "CUDA_CACHE_PATH", "XDG_CACHE_HOME", "TRITON_CACHE_DIR"):
+    for key in ("HF_HOME", "TORCH_HOME", "CUDA_CACHE_PATH", "XDG_CACHE_HOME", "TRITON_CACHE_DIR", "NUMBA_CACHE_DIR"):
         assert Path(env[key]).is_relative_to(root), key
