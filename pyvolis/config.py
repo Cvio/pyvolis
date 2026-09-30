@@ -210,6 +210,18 @@ class PyVad:
 
 
 @dataclass
+class PyGuards:
+    """Hallucination guards (asr/guards.py); each can be switched off to
+    measure what it does."""
+
+    vad_probability: bool = True
+    # A segment whose Silero speech probability never reaches this is dropped.
+    min_peak_probability: float = 0.8
+    repeats: bool = True
+    stock_phrases: bool = True
+
+
+@dataclass
 class PyvolisConfig:
     """`pyvolis.toml` at the app root: settings Rust volis doesn't have.
 
@@ -219,6 +231,7 @@ class PyvolisConfig:
     """
 
     vad: PyVad = field(default_factory=PyVad)
+    guards: PyGuards = field(default_factory=PyGuards)
 
     @classmethod
     def load(cls, path: Path) -> tuple[PyvolisConfig, bool]:

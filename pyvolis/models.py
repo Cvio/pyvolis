@@ -485,6 +485,13 @@ def _transformers_asr(directory: Path, overrides: dict[str, Any]) -> Engine:
             "if you trust it"
         )
     _apply_languages(engine, directory, overrides)
+    # MMS: the languages it can do here are the adapters actually present, not
+    # the ~1,100 its model card lists.
+    adapters = sorted(p.name.split(".")[1] for p in directory.glob("adapter.*.safetensors"))
+    if adapters and not overrides.get("languages"):
+        engine.languages = [varieties.from_iso639_3(code) for code in adapters]
+        engine.languages_known = True
+        engine.detail += f"; language adapters: {', '.join(adapters)}"
     return engine
 
 

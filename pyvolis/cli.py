@@ -2,7 +2,7 @@
 
 Deliberately small: the window is where the controls belong. These flags
 exist so each milestone can be checked from a shell. Commands arrive with the
-milestone that builds them (`--devices` and `--listen` at P1 and P2).
+milestone that builds them (`--devices` at P1, `--listen` at P2).
 """
 
 from __future__ import annotations
@@ -26,6 +26,13 @@ COMMANDS:
     (none)              Open the window
     --report            Print the discovered models and exit
     --devices           List audio input and output devices and exit
+    --listen            Capture from the microphone and transcribe
+
+OPTIONS FOR --listen:
+    --seconds <N>       Stop cleanly after N seconds (otherwise: Ctrl-C)
+    --wav               Write each detected utterance to logs\\segments\\
+    --compare           Run every usable recognizer on each utterance and print
+                        transcripts, timings and segment durations side by side
 
     -h, --help          Show this message
 
@@ -40,7 +47,10 @@ class UsageError(Exception):
 
 @dataclass(frozen=True)
 class Command:
-    name: str  # "gui" | "report" | "devices" | "help"
+    name: str  # "gui" | "report" | "devices" | "listen" | "help"
+    seconds: int | None = None  # --listen: stop after this many seconds
+    write_wav: bool = False  # --listen --wav
+    compare: bool = False  # --listen --compare
 
 
 def parse(args: list[str]) -> Command:
@@ -55,6 +65,24 @@ def parse(args: list[str]) -> Command:
     if first == "--devices":
         _reject_extra(rest)
         return Command("devices")
+    if first == "--listen":
+        seconds, write_wav, compare = None, False, False
+        options = iter(rest)
+        for arg in options:
+            if arg == "--wav":
+                write_wav = True
+            elif arg == "--compare":
+                compare = True
+            elif arg == "--seconds":
+                value = next(options, None)
+                if value is None:
+                    raise UsageError("--seconds needs a number of seconds")
+                if not value.isdigit():
+                    raise UsageError(f'--seconds "{value}" is not a number')
+                seconds = int(value)
+            else:
+                raise _unknown(arg)
+        return Command("listen", seconds, write_wav, compare)
     raise _unknown(first)
 
 
@@ -98,6 +126,11 @@ def run(args: list[str], root: Path) -> int:
     if command.name == "gui":
         print("The window arrives at P5. For now: pyvolis --report", file=sys.stderr)
         return 2
+    if command.name == "listen":
+        from . import listen
+        from .pipeline import Options
+
+        return listen.run(root, config, command.seconds, Options(command.write_wav, command.compare))
     return run_report(root, config)
 
 

@@ -56,6 +56,11 @@ def pyvolis_config_file(root: Path) -> Path:
     return root / "pyvolis.toml"
 
 
+def hallucinations_file(root: Path) -> Path:
+    """`<root>/config/hallucinations.toml` - stock phrases, user-editable."""
+    return root / "config" / "hallucinations.toml"
+
+
 def models_dir(root: Path) -> Path:
     return root / "models"
 

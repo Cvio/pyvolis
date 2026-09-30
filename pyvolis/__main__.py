@@ -13,6 +13,11 @@ def main() -> None:
 
     root = paths.app_root()
     paths.apply_offline_environment(root)
+    # Arabic and Persian must reach the console and the log intact; a Windows
+    # console defaults to a code page that can't encode them.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     from pyvolis import cli
 

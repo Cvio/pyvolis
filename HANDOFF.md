@@ -11,8 +11,13 @@ Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   file source (`filesource.py`, PyAV), Silero VAD with the pre-roll (`vad.py`), `pyvolis.toml`
   with `[vad].pre_roll_ms`, `tests\fetch-fixtures.ps1`, and `scripts\vad_cuts.py` (cut points
   with and without the pre-roll, from a file, the fixtures or the microphone).
-- Next: P2 (ASR backends: sherpa and transformers, `--compare`, hallucination guards). Wait for
-  the go-ahead.
+- **P2 done, one check partly open (below):** recognizers through sherpa-onnx (`asr/sherpa.py`)
+  and transformers (`asr/hf.py`: Whisper, CTC with MMS adapters, Cohere Transcribe), the
+  hallucination guards (`asr/guards.py`, `config/hallucinations.toml`), `ring.py`, `compare.py`,
+  the pipeline core (`pipeline.py`) and `--listen` with `--seconds`, `--wav`, `--compare`.
+  Scripts: `scripts/transcribe.py` (every model on the fixtures: CER, share of outputs without
+  punctuation, real-time factor), `parity/asr.py` (Rust volis vs pyvolis on the same audio).
+- Next: P3 (GGUF translators). Wait for the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -66,13 +71,45 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
 12. **File input is new** (`filesource.py`): WAV, MP3, M4A/AAC, FLAC, OGG/Vorbis, Opus, ALAC,
     decoded by PyAV, averaged to mono and resampled like the microphone.
 
-## For P2
+13. **`--compare` manages GPU memory.** Rust keeps every engine loaded. pyvolis loads every
+    engine if they fit; if the GPU models don't, they take turns (each loaded for its run and
+    released) while the CPU (sherpa) models stay loaded. Runs are always one after another.
+14. **Hallucination guards are new** (`[guards]` in `pyvolis.toml`, each switchable). The
+    speech-probability guard uses a second Silero model from the same `silero_vad.onnx`, run by
+    sherpa-onnx at `min_peak_probability` (0.8): sherpa-onnx's Python binding doesn't expose
+    Silero's probabilities, but it applies a threshold to each window, which answers "did any
+    window clearly contain speech?". (PyTorch can't run an `.onnx` file, which the user had
+    been told it could.)
+15. **The console is UTF-8** (`__main__.py`), so Arabic and Persian reach it intact.
+16. **Whisper through sherpa is created with `tail_paddings=0`,** as Rust passes; the Python
+    binding's default is -1.
 
-- sherpa-onnx's Python VAD doesn't expose Silero's per-window speech probability, which the
-  guard "drop segments whose speech probability is low throughout" needs. Options to decide at
-  P2: run Silero's ONNX file a second time through another runtime (the `onnxruntime` package
-  can't share the process safely with sherpa-onnx's copy, per model-converter's README), use
-  torch to run the Silero model, or approximate with what sherpa does expose.
+## P2 findings
+
+- **Recognition parity with Rust (`parity/asr.py`).** Rust volis listens to the VB-Audio cable
+  while the Spanish fixtures play into it; pyvolis transcribes the WAVs Rust wrote. Parakeet:
+  identical on every utterance. Whisper (all three int8 ONNX folders): 13 of ~33 differ, by a
+  word or a capital. Cause, shown: Rust's WAVs are 16-bit, and changing the audio by less than
+  one 16-bit step flips int8 Whisper's text ("Los personas" -> "Las zonas"; scaling by
+  32767/32768 gives Rust's exact "Las personas"). So the WAV route proves Parakeet's
+  configuration and can't prove Whisper's. Fix proposed to the user: set the cable's format to
+  16 bit, 16000 Hz in Windows (their change to make), so Rust receives exact 16-bit samples
+  with no resampling and pyvolis can recover them exactly.
+- **transformers 5.18 speech classes** (seq2seq): canary, cohere_asr, fun_asr_nano,
+  granite_speech(_plus), kyutai_speech_to_text, moonshine(_streaming), qwen3_asr,
+  seamless_m4t(_v2), speech-encoder-decoder, speech_to_text, speecht5, vibevoice_asr, voxtral,
+  voxtral_realtime, whisper. CTC: data2vec-audio, granite_speech5_ctc, hubert, lasr_ctc,
+  parakeet_ctc, sew(-d), unispeech(-sat), wav2vec2(-bert, -conformer), wavlm.
+- **Fixtures (`scripts/transcribe.py`, 10 FLEURS clips each):** Spanish CER 0.5 to 1.9% for every
+  model. Arabic: Cohere Transcribe 2.1%, the oddadmix Whisper fine-tune 3.7% in float16 through
+  transformers but 8.4% as Rust's int8 ONNX (which cuts sentences short), base Whisper turbo
+  5.2% **with no punctuation on any Arabic output**, MMS 5.8% (CTC: never punctuates).
+- **A hole in the guards:** noise shaped like speech (band-limited, pulsing at syllable rate)
+  passes Silero, and Whisper answers it with invented text: once "¡Suscríbete al canal!"
+  (dropped by the stock-phrase guard), once a lone "y" that no guard catches. A possible fourth
+  guard, for the user to decide: text implausibly short for the length of the segment.
+- **Persian ("fa")** is in model cards, MMS and the fixtures but not in the varieties table
+  shared with Rust, so a side can't be set to Persian in either app yet.
 
 ## Rust behaviour ported as it is, for the user to decide
 

@@ -83,3 +83,25 @@ def display_name(tag: str) -> str:
     """How to show a tag in the window. An unknown tag is shown, marked so."""
     found = lookup(tag)
     return found.display if found else f"{tag.strip()} (unknown)"
+
+
+# ISO 639-3 codes for the languages above, for models that name languages that
+# way (MMS's adapters: "spa", "eng", "ara", "fas"). Persian is here though the
+# table above doesn't list it yet: MMS and the FLEURS fixtures use it.
+ISO639_3 = {
+    "en": "eng", "es": "spa", "ar": "ara", "fa": "fas", "de": "deu",
+    "fr": "fra", "it": "ita", "pt": "por", "ru": "rus",
+}
+
+
+def iso639_3(tag: str) -> str | None:
+    """The ISO 639-3 code for a tag's language, or None if unknown here."""
+    return ISO639_3.get(language_of(tag).lower())
+
+
+def from_iso639_3(code: str) -> str:
+    """Back to the two-letter code where known; otherwise the code itself."""
+    for two, three in ISO639_3.items():
+        if three == code:
+            return two
+    return code

@@ -1,0 +1,61 @@
+# Text speech recognizers invent on silence or noise, per language. Edit freely:
+# pyvolis reads this file at start. Matching ignores case, punctuation and
+# extra spaces. Every drop is logged with its reason, so a wrong one can be spotted.
+#
+#   whole     = the whole transcript is exactly this: drop it
+#   prefix    = the whole transcript starts with this: drop it
+#   trailing  = the transcript ends with this: cut it off, keep the rest
+#
+# Section names are language codes (the language part of a variety: es-MX -> es).
+
+[es]
+whole = [
+    "Gracias por ver el video",
+    "Gracias por ver",
+    "Suscríbete al canal",
+    "¡Suscríbete!",
+    "Muchas gracias",
+    "Gracias",
+    "Repito",
+]
+prefix = [
+    "Subtítulos realizados por",
+    "Subtítulos por la comunidad de Amara",
+    "Subtitulado por",
+]
+trailing = [
+    "Repito",
+]
+
+[en]
+whole = [
+    "Thank you for watching",
+    "Thanks for watching",
+    "Thank you",
+    "Please subscribe to my channel",
+    "Bye",
+]
+prefix = [
+    "Subtitles by the Amara.org community",
+    "Transcribed by",
+]
+trailing = []
+
+[ar]
+whole = [
+    "اشتركوا في القناة",
+    "اشترك في القناة",
+    "شكرا للمشاهدة",
+]
+prefix = [
+    "ترجمة نانسي قنقر",
+    "نانسي قنقر",
+]
+trailing = []
+
+[fa]
+whole = []
+prefix = [
+    "زیرنویس",
+]
+trailing = []

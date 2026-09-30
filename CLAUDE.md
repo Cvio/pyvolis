@@ -62,5 +62,5 @@ function; no settings no milestone needs.
 
 ## Status
 
-P0 and P1 done (discovery, report, doctor, capture, file source, VAD, pre-roll). See
+P0 to P2 done (discovery, capture, VAD, pre-roll, recognizers, guards, --listen). See
 `HANDOFF.md`.

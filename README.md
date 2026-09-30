@@ -4,8 +4,8 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P1 of `pyvolis-build.md`. So far pyvolis finds and lists models, captures
-from the microphone or a file, and cuts speech into utterances; it doesn't recognise or
+Status: milestone P2 of `pyvolis-build.md`. pyvolis finds models, listens to the microphone,
+cuts speech into utterances and transcribes them with any installed recognizer; it doesn't
 translate yet.
 
 ## Setup (development)
@@ -71,10 +71,18 @@ listed as "languages unknown" and offered for every language.
 ```toml
 [vad]
 pre_roll_ms = 600   # audio kept from before each utterance; 0 = off
+
+[guards]            # drop text recognizers invent on silence or noise
+vad_probability = true
+min_peak_probability = 0.8
+repeats = true
+stock_phrases = true   # the phrases are in config\hallucinations.toml
 ```
 
 ```powershell
 .\.venv\Scripts\python.exe -m pyvolis --devices        # names for [audio] in volis.toml
+.\.venv\Scripts\python.exe -m pyvolis --listen --seconds 30 --compare
+.\.venv\Scripts\python.exe scripts	ranscribe.py es_419 ar_eg   # every model on the fixtures
 .\tests\fetch-fixtures.ps1                               # test clips (development)
 .\.venv\Scripts\python.exe scripts\vad_cuts.py --wav   # cut points with and without pre-roll
 .\.venv\Scripts\python.exe scripts\vad_cuts.py --mic 20 --wav
