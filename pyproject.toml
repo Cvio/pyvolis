@@ -29,7 +29,10 @@ dependencies = [
     "av",
     # transformers' Cohere Transcribe feature extractor requires it.
     "librosa",
-    # llama-cpp-python is added at P3, after its CUDA build is verified.
+    # Built here by build-llama.ps1 (CPU; see there why), kept in wheels\.
+    "llama-cpp-python==0.3.35",
+    # llama-cpp-python renders chat templates with it; pyvolis does too.
+    "jinja2",
 ]
 
 [project.scripts]
@@ -58,6 +61,7 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
+llama-cpp-python = { path = "wheels/llama_cpp_python-0.3.35-py3-none-win_amd64.whl" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

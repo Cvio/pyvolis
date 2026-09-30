@@ -17,7 +17,11 @@ Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   the pipeline core (`pipeline.py`) and `--listen` with `--seconds`, `--wav`, `--compare`.
   Scripts: `scripts/transcribe.py` (every model on the fixtures: CER, share of outputs without
   punctuation, real-time factor), `parity/asr.py` (Rust volis vs pyvolis on the same audio).
-- Next: P3 (GGUF translators). Wait for the go-ahead.
+- **P3 done:** GGUF translators through llama-cpp-python (`translate/llamacpp.py`), prompts from
+  each model's own chat template, Rust's cleaning and three guards (`translate/guards.py`),
+  prompt files (`prompts/`), several translators (`[translate]` in `pyvolis.toml`), and
+  `--translate` / `--print-prompt`. `parity/translate.py` compares with Rust volis.
+- Next: P4 (file mode on the command line). Wait for the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -84,6 +88,37 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
 16. **Whisper through sherpa is created with `tail_paddings=0`,** as Rust passes; the Python
     binding's default is -1.
 
+17. **llama-cpp-python is built here** (`build-llama.ps1`, CPU, kept in `wheels\`). Its
+    published Windows wheels stop at 0.3.19 (CPU) and 0.3.4 (CUDA 12.4, too old for Qwen3 and
+    for the RTX 5090); 0.3.35 is source only. Rust runs its translator on the CPU too.
+18. **Flash attention is on.** llama.cpp defaults to "auto", which is on for the CPU, and that
+    is what Rust's llama-cpp-2 gets; llama-cpp-python turns it off unless told. With it off,
+    9 of 25 translations differed from Rust's; with it on, all 25 are identical.
+19. **Prompts come from each GGUF's chat template** (Rust hardcodes Qwen's ChatML). For Qwen3
+    the rendered prompt is byte-identical to Rust's `prompt_for` (tests/test_translate.py),
+    with thinking turned off through the template's `enable_thinking`.
+20. **Several translators**: `[translate].model` in `pyvolis.toml` (default: the file at the
+    top of `models\mt\`, Rust's); `[translate].prompt` picks a prompt file.
+
+## P3 findings
+
+- **Translation parity:** 25 sentences (14 Spanish->English, 11 English->Spanish, Rust's own
+  transcripts from the cable run), Qwen3 1.7B, default prompt: **25 of 25 identical**, on the
+  CPU, about 0.7 to 2.1 s a sentence (Rust's timings on the same sentences were the same range).
+- **A second family**, Gemma 3 4B (`unsloth/gemma-3-4b-it-GGUF`, Q4_K_M), translates with its
+  own template (no system role; it writes its own `<bos>`) and no code changes: 1.9 to 3.0 s a
+  sentence on the CPU. Asked for Mexican Spanish it wrote "¿Qué onda, carnal?".
+- **GPU for the translator** needs a CUDA build of llama-cpp-python, which needs the CUDA
+  Toolkit (12.8 or newer, for the 5090) installed on the building machine. Not installed here;
+  the user's decision.
+- **llama-cpp-python 0.3.35 ships `mtmd.dll` and a `mtmd_cpp` module** (llama.cpp's multimodal
+  library): the starting point for P11's audio-input check.
+- **Recognition parity through the cable can't be made exact.** With both ends at 16 kHz the
+  audio still arrives scaled (gain 0.9896) and not sample-exact, so Whisper's P2 differences
+  stand as explained; Parakeet matched exactly on every Spanish utterance in P2. Exact Whisper
+  parity would need Rust to transcribe a file itself (its test binary, built outside the Rust
+  repo) - the user's call.
+
 ## P2 findings
 
 - **Recognition parity with Rust (`parity/asr.py`).** Rust volis listens to the VB-Audio cable
@@ -92,9 +127,8 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
   word or a capital. Cause, shown: Rust's WAVs are 16-bit, and changing the audio by less than
   one 16-bit step flips int8 Whisper's text ("Los personas" -> "Las zonas"; scaling by
   32767/32768 gives Rust's exact "Las personas"). So the WAV route proves Parakeet's
-  configuration and can't prove Whisper's. Fix proposed to the user: set the cable's format to
-  16 bit, 16000 Hz in Windows (their change to make), so Rust receives exact 16-bit samples
-  with no resampling and pyvolis can recover them exactly.
+  configuration and can't prove Whisper's. Setting the cable to 16 kHz didn't make it exact
+  (see P3 findings).
 - **transformers 5.18 speech classes** (seq2seq): canary, cohere_asr, fun_asr_nano,
   granite_speech(_plus), kyutai_speech_to_text, moonshine(_streaming), qwen3_asr,
   seamless_m4t(_v2), speech-encoder-decoder, speech_to_text, speecht5, vibevoice_asr, voxtral,

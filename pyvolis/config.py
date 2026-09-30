@@ -222,6 +222,16 @@ class PyGuards:
 
 
 @dataclass
+class PyTranslate:
+    # The translator, as --report lists it: "qwen3-1.7b-q4_k_m.gguf" (a file at
+    # the top of models/mt/) or "folder/file.gguf". Empty = the file at the
+    # top, the one Rust volis uses, or else the first usable one.
+    model: str = ""
+    # A prompt file in prompts/, by name.
+    prompt: str = "default"
+
+
+@dataclass
 class PyvolisConfig:
     """`pyvolis.toml` at the app root: settings Rust volis doesn't have.
 
@@ -232,6 +242,7 @@ class PyvolisConfig:
 
     vad: PyVad = field(default_factory=PyVad)
     guards: PyGuards = field(default_factory=PyGuards)
+    translate: PyTranslate = field(default_factory=PyTranslate)
 
     @classmethod
     def load(cls, path: Path) -> tuple[PyvolisConfig, bool]:

@@ -62,5 +62,5 @@ function; no settings no milestone needs.
 
 ## Status
 
-P0 to P2 done (discovery, capture, VAD, pre-roll, recognizers, guards, --listen). See
+P0 to P3 done (discovery, capture, VAD, recognizers, guards, --listen, GGUF translators). See
 `HANDOFF.md`.

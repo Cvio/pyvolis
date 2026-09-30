@@ -61,6 +61,11 @@ def hallucinations_file(root: Path) -> Path:
     return root / "config" / "hallucinations.toml"
 
 
+def prompts_dir(root: Path) -> Path:
+    """`<root>/prompts` - the translator's system text, one file per variant."""
+    return root / "prompts"
+
+
 def models_dir(root: Path) -> Path:
     return root / "models"
 

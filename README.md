@@ -4,9 +4,9 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P2 of `pyvolis-build.md`. pyvolis finds models, listens to the microphone,
-cuts speech into utterances and transcribes them with any installed recognizer; it doesn't
-translate yet.
+Status: milestone P3 of `pyvolis-build.md`. pyvolis finds models, listens to the microphone,
+transcribes with any installed recognizer, and translates sentences with any GGUF translator
+(`--translate`); the two aren't joined into a live pipeline yet.
 
 ## Setup (development)
 
@@ -77,16 +77,27 @@ vad_probability = true
 min_peak_probability = 0.8
 repeats = true
 stock_phrases = true   # the phrases are in config\hallucinations.toml
+
+[translate]
+model = ""          # as --report lists it; "" = the .gguf at the top of models\mt\
+prompt = "default"  # a file in prompts\
 ```
 
 ```powershell
 .\.venv\Scripts\python.exe -m pyvolis --devices        # names for [audio] in volis.toml
 .\.venv\Scripts\python.exe -m pyvolis --listen --seconds 30 --compare
+.\.venv\Scripts\python.exe -m pyvolis --translate "¿Dónde está la estación?" --from es --to en
 .\.venv\Scripts\python.exe scripts	ranscribe.py es_419 ar_eg   # every model on the fixtures
 .\tests\fetch-fixtures.ps1                               # test clips (development)
 .\.venv\Scripts\python.exe scripts\vad_cuts.py --wav   # cut points with and without pre-roll
 .\.venv\Scripts\python.exe scripts\vad_cuts.py --mic 20 --wav
 ```
+
+## The translator build
+
+llama-cpp-python is compiled here, once, by `.\build-llama.ps1` (needs Visual Studio Build
+Tools), and the wheel is kept in `wheels\`, so `setup.ps1` needs no compiler. It is a CPU
+build, as Rust volis's translator is.
 
 ## Checking against Rust volis
 

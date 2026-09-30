@@ -15,7 +15,14 @@ reads audio only from a device, so:
      transcript of it. pyvolis's sherpa backend transcribes those same WAVs
      with the same engines, and the texts are compared.
 
-The WAVs are 16-bit, so pyvolis hears Rust's audio to within 16-bit rounding.
+What this can and can't prove. The WAVs are 16-bit, and the audio also
+passes through Windows and the cable driver, which scale it (measured gain
+0.9896) and resample it internally even with both ends set to 16 kHz, so
+pyvolis hears Rust's audio only to within about half a 16-bit step. That is
+enough for Parakeet (identical on every Spanish utterance, 2026-09-30) and
+not for int8 Whisper, whose text changes for differences smaller than one
+16-bit step (shown by transcribing the same WAV with and without a sub-step
+nudge). Exact Whisper parity needs Rust to transcribe a file itself.
 Nothing in the Rust repository is written to.
 """
 
@@ -56,13 +63,18 @@ LANGUAGE = {"es_419": ("es", "en"), "ar_eg": ("ar", "en"), "en_us": ("en", "es")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 TABLE = re.compile(r"^utterance (\d+) at (\d+) ms - (\d+) ms of audio$")
 ROW = re.compile(r"^  [* ] (\S+)\s+(\d+) ms")
+HEARD = re.compile(r"volis::pipeline: utterance (\d+): \d+ ms \.\.")
+TRANSCRIPT = re.compile(r"volis::pipeline:   \[([A-Za-z-]+)\] (.*)$")
+TRANSLATED = re.compile(r"volis::pipeline: utterance (\d+)$")
+BRACKETED = re.compile(r"^  \[([A-Za-z-]+)\] (.*)$")
+REFUSED = re.compile(r"utterance (\d+): translation failed: (.*)$")
 WROTE = re.compile(r"wrote (.*utterance-(\d{4})-at-\d+ms-for-\d+ms\.wav)")
 
 
 class Rust:
     """The parity copy of volis.exe, running --listen, its output parsed."""
 
-    def __init__(self, source: str, target: str) -> None:
+    def __init__(self, source: str, target: str, compare: bool = True) -> None:
         exe = volis_exe()
         if WORK.exists():
             shutil.rmtree(WORK)
@@ -79,21 +91,44 @@ class Rust:
         self.selected = config.asr.engine
         env = dict(os.environ, RUST_LOG="info", NO_COLOR="1")
         self.proc = subprocess.Popen(
-            [str(WORK / exe.name), "--listen", "--wav", "--compare"], cwd=WORK, env=env,
+            [str(WORK / exe.name), "--listen", "--wav"] + (["--compare"] if compare else []), cwd=WORK, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
         )
         self.lines: list[str] = []
         self.tables: dict[int, dict[str, str]] = {}
         self.wavs: dict[int, Path] = {}
+        # Translations: utterance -> (source text, translation or None if refused).
+        self.translations: dict[int, tuple[str, str | None]] = {}
+        self.refusals: dict[int, str] = {}
+        self.transcripts: dict[int, str] = {}
         self.listening = threading.Event()
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
 
     def _read(self) -> None:
         current, engine = None, None
+        pending: list = []  # a translation block being read: [index, source text]
+        heard = 0  # the utterance being transcribed
         for raw in self.proc.stdout:
             line = ANSI.sub("", raw.rstrip("\n"))
             self.lines.append(line)
+            if m := TRANSLATED.search(line):
+                pending = [int(m.group(1))]
+                continue
+            if m := HEARD.search(line):
+                heard = int(m.group(1))
+            if not pending and heard and (m := TRANSCRIPT.search(line)):
+                self.transcripts[heard] = m.group(2)
+                continue
+            if pending and (m := BRACKETED.match(line)):
+                if len(pending) == 1:
+                    pending.append(m.group(2))
+                else:
+                    self.translations[pending[0]] = (pending[1], m.group(2))
+                    pending = []
+                continue
+            if m := REFUSED.search(line):
+                self.refusals[int(m.group(1))] = m.group(2)
             if "Ctrl-C to stop" in line or "listening for" in line:
                 self.listening.set()
             if m := TABLE.match(line):
@@ -132,20 +167,22 @@ class Rust:
         self.proc.wait(timeout=30)
 
 
-def play(clip: np.ndarray, device: int) -> None:
+def play(clip: np.ndarray, device: int, rate: int = 16_000) -> None:
+    """Play a 16 kHz clip into the cable at the cable's rate, then 1.5 s of silence."""
     import sounddevice as sd
 
-    rate = 48_000
-    import soxr
+    if rate != 16_000:
+        import soxr
 
-    up = soxr.resample(clip, 16_000, rate).astype(np.float32)
+        clip = soxr.resample(clip, 16_000, rate).astype(np.float32)
     silence = np.zeros(int(rate * 1.5), np.float32)
-    sd.play(np.concatenate([up, silence]), samplerate=rate, device=device)
+    sd.play(np.concatenate([clip, silence]), samplerate=rate, device=device)
     sd.wait()
 
 
 def read_rust_wav(path: Path) -> np.ndarray:
-    """Undo Rust's write: round(x * i16::MAX)."""
+    """Undo Rust's write, round(x * i16::MAX): Rust's audio to within half a
+    16-bit step."""
     with wave.open(str(path), "rb") as w:
         data = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
     return (data.astype(np.float32) / 32767.0).astype(np.float32)
@@ -153,7 +190,8 @@ def read_rust_wav(path: Path) -> np.ndarray:
 
 def main(argv: list[str]) -> int:
     sets = argv or ["es_419", "ar_eg"]
-    outputs = {d.name: d.index for d in audio.list_output_devices()}
+    devices = {d.name: d for d in audio.list_output_devices()}
+    outputs = {name: d.index for name, d in devices.items()}
     if CABLE_IN not in outputs:
         raise SystemExit(f"STOP: no output device named {CABLE_IN!r}; install the VB-Audio Virtual Cable")
     engines = [e for e in models.discover(paths.asr_dir(REPO), models.Role.ASR)
@@ -171,7 +209,8 @@ def main(argv: list[str]) -> int:
                 raise SystemExit("STOP: Rust volis never started listening:\n" + "\n".join(rust.lines[-30:]))
             for i, ref in enumerate(refs):
                 before = len(rust.tables)
-                play(read_16k_mono(folder / ref["file"]), outputs[CABLE_IN])
+                rate = int(devices[CABLE_IN].default_config.split(", ")[1].split()[0])
+                play(read_16k_mono(folder / ref["file"]), outputs[CABLE_IN], rate)
                 # Wait until Rust has finished every utterance of this clip.
                 deadline = time.monotonic() + 120
                 while time.monotonic() < deadline:

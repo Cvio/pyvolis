@@ -27,12 +27,20 @@ COMMANDS:
     --report            Print the discovered models and exit
     --devices           List audio input and output devices and exit
     --listen            Capture from the microphone and transcribe
+    --translate <TEXT>  Translate one sentence and print it
+    --print-prompt <TEXT>  Print the exact prompt the translator would get
 
 OPTIONS FOR --listen:
     --seconds <N>       Stop cleanly after N seconds (otherwise: Ctrl-C)
     --wav               Write each detected utterance to logs\\segments\\
     --compare           Run every usable recognizer on each utterance and print
                         transcripts, timings and segment durations side by side
+
+OPTIONS FOR --translate AND --print-prompt:
+    --from <TAG>        Source language or variety (default: [languages].source)
+    --to <TAG>          Target (default: [languages].target)
+    --mt <ID>           Translator, as --report lists it (default: pyvolis.toml)
+    --prompt <NAME>     Prompt file in prompts\\ (default: pyvolis.toml)
 
     -h, --help          Show this message
 
@@ -51,6 +59,11 @@ class Command:
     seconds: int | None = None  # --listen: stop after this many seconds
     write_wav: bool = False  # --listen --wav
     compare: bool = False  # --listen --compare
+    text: str = ""  # --translate / --print-prompt
+    source: str = ""
+    target: str = ""
+    mt: str = ""
+    prompt: str = ""
 
 
 def parse(args: list[str]) -> Command:
@@ -83,6 +96,20 @@ def parse(args: list[str]) -> Command:
             else:
                 raise _unknown(arg)
         return Command("listen", seconds, write_wav, compare)
+    if first in ("--translate", "--print-prompt"):
+        if not rest or rest[0].startswith("--"):
+            raise UsageError(f"{first} needs the text to translate")
+        values = {"--from": "", "--to": "", "--mt": "", "--prompt": ""}
+        options = iter(rest[1:])
+        for arg in options:
+            if arg not in values:
+                raise _unknown(arg)
+            value = next(options, None)
+            if value is None:
+                raise UsageError(f"{arg} needs a value")
+            values[arg] = value
+        return Command(first[2:], text=rest[0], source=values["--from"], target=values["--to"],
+                       mt=values["--mt"], prompt=values["--prompt"])
     raise _unknown(first)
 
 
@@ -131,7 +158,50 @@ def run(args: list[str], root: Path) -> int:
         from .pipeline import Options
 
         return listen.run(root, config, command.seconds, Options(command.write_wav, command.compare))
+    if command.name in ("translate", "print-prompt"):
+        return run_translate(root, config, command)
     return run_report(root, config)
+
+
+def run_translate(root: Path, config: Config, command: Command) -> int:
+    """--translate and --print-prompt: one sentence, no audio."""
+    from . import translate
+    from .config import PyvolisConfig
+    from .translate import prompts
+
+    try:
+        pyconfig, _ = PyvolisConfig.load(paths.pyvolis_config_file(root))
+        entry = translate.choose(root, command.mt or pyconfig.translate.model)
+        prompt = prompts.load(paths.prompts_dir(root), command.prompt or pyconfig.translate.prompt)
+        translator = translate.load(entry, prompt)
+    except (ConfigError, translate.TranslateError, prompts.PromptError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    request = translate.TranslationRequest(
+        command.text, command.source or config.languages.source, command.target or config.languages.target
+    )
+    try:
+        if command.name == "print-prompt":
+            # Bytes, so Windows doesn't turn LF into CRLF: the prompt is
+            # compared byte for byte with Rust's.
+            sys.stdout.flush()
+            sys.stdout.buffer.write(translator.prompt(request).encode("utf-8"))
+            sys.stdout.buffer.flush()
+            return 0
+        result = translator.translate(request)
+    except translate.Refused as e:
+        print(f"refused ({e.guard}): {e}", file=sys.stderr)
+        return 1
+    except translate.TranslateError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        translator.close()
+    print(f"[{request.source}] {request.text}")
+    print(f"[{request.target}] {result.text}")
+    print(f"({result.seconds * 1000:.0f} ms to translate on the {result.device.upper()}, {entry.id}, "
+          f"prompt {prompt.name})")
+    return 0
 
 
 def print_devices() -> int:
