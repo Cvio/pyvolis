@@ -51,6 +51,11 @@ def config_file(root: Path) -> Path:
     return root / "volis.toml"
 
 
+def pyvolis_config_file(root: Path) -> Path:
+    """`<root>/pyvolis.toml` - settings Rust volis doesn't have."""
+    return root / "pyvolis.toml"
+
+
 def models_dir(root: Path) -> Path:
     return root / "models"
 

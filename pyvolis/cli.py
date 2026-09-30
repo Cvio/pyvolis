@@ -25,6 +25,7 @@ USAGE:
 COMMANDS:
     (none)              Open the window
     --report            Print the discovered models and exit
+    --devices           List audio input and output devices and exit
 
     -h, --help          Show this message
 
@@ -39,7 +40,7 @@ class UsageError(Exception):
 
 @dataclass(frozen=True)
 class Command:
-    name: str  # "gui" | "report" | "help"
+    name: str  # "gui" | "report" | "devices" | "help"
 
 
 def parse(args: list[str]) -> Command:
@@ -51,6 +52,9 @@ def parse(args: list[str]) -> Command:
     if first == "--report":
         _reject_extra(rest)
         return Command("report")
+    if first == "--devices":
+        _reject_extra(rest)
+        return Command("devices")
     raise _unknown(first)
 
 
@@ -77,6 +81,9 @@ def run(args: list[str], root: Path) -> int:
     print(f"pyvolis {__version__} - offline, no network required")
     print(f"app root: {root}")
 
+    if command.name == "devices":
+        return print_devices()
+
     config_path = paths.config_file(root)
     try:
         config, found = Config.load(config_path)
@@ -92,6 +99,33 @@ def run(args: list[str], root: Path) -> int:
         print("The window arrives at P5. For now: pyvolis --report", file=sys.stderr)
         return 2
     return run_report(root, config)
+
+
+def print_devices() -> int:
+    """Audio devices, so the user can put exact names in [audio]."""
+    from . import audio
+
+    try:
+        inputs, outputs = audio.list_input_devices(), audio.list_output_devices()
+    except audio.AudioError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    _print_device_list("Audio input devices", "[audio].input_device", inputs)
+    _print_device_list("Audio output devices", "[audio].output_device", outputs)
+    print()
+    print("  * = system default. Leave the setting empty to follow it.")
+    return 0
+
+
+def _print_device_list(title: str, setting: str, devices: list) -> None:
+    print()
+    print(f"{title}  ({setting})")
+    if not devices:
+        print("  (none)")
+        return
+    for device in devices:
+        config = f"  ({device.default_config})" if device.default_config else ""
+        print(f"  {'*' if device.is_default else ' '} {device.name}{config}")
 
 
 def run_report(root: Path, config: Config) -> int:

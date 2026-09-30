@@ -7,7 +7,12 @@ Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
 - **P0 done:** paths and the offline environment, `volis.toml` load and save, discovery for
   `engine.toml` folders, Hugging Face folders and GGUF translators, `--report`, `doctor.ps1`,
   `fetch-model.ps1`, `parity\report.py`, and the offline test.
-- Next: P1 (audio in: microphone, file, VAD, pre-roll). Wait for the go-ahead.
+- **P1 done:** `--devices` (identical to Rust's output), microphone capture (`audio.py`), the
+  file source (`filesource.py`, PyAV), Silero VAD with the pre-roll (`vad.py`), `pyvolis.toml`
+  with `[vad].pre_roll_ms`, `testsetch-fixtures.ps1`, and `scriptsad_cuts.py` (cut points
+  with and without the pre-roll, from a file, the fixtures or the microphone).
+- Next: P2 (ASR backends: sherpa and transformers, `--compare`, hallucination guards). Wait for
+  the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -46,6 +51,29 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
 6. **Logs** go to `logs\pyvolis.log.<date>` (Rust: `volis.log.<date>`), plus `logs\doctor.json`.
 7. **Varieties error message** names both `pyvolis/varieties.py` and Rust's `src/varieties.rs`,
    because the tables must stay the same (a test pins pyvolis's to Rust's).
+
+8. **Devices are PortAudio's WASAPI list** (sounddevice). cpal's default Windows host is WASAPI,
+   so names and order match Rust's; the "F32" in each device line is assumed (WASAPI shared
+   mode always delivers float32), where cpal asks the device.
+9. **Resampling uses soxr, not sherpa-onnx's linear resampler.** A better filter for the same
+   job. Recognition of 16 kHz input (the fixtures) is unaffected; audio from a 48 kHz
+   microphone reaches the recognizer slightly differently than in Rust.
+10. **The pre-roll length is a setting**, `[vad].pre_roll_ms` in `pyvolis.toml`, default 600 ms
+    (Rust's fixed value; the build file assumed 300 ms, but Rust already found 300 too short for
+    "¿Cuántos años tienes?"). 0 turns it off. Segments also record where the detector itself
+    said speech began, so the lead-in can be measured.
+11. **The VAD reset** pops queued segments one by one: sherpa-onnx's Python binding has no
+    `clear()`. Same effect.
+12. **File input is new** (`filesource.py`): WAV, MP3, M4A/AAC, FLAC, OGG/Vorbis, Opus, ALAC,
+    decoded by PyAV, averaged to mono and resampled like the microphone.
+
+## For P2
+
+- sherpa-onnx's Python VAD doesn't expose Silero's per-window speech probability, which the
+  guard "drop segments whose speech probability is low throughout" needs. Options to decide at
+  P2: run Silero's ONNX file a second time through another runtime (the `onnxruntime` package
+  can't share the process safely with sherpa-onnx's copy, per model-converter's README), use
+  torch to run the Silero model, or approximate with what sherpa does expose.
 
 ## Rust behaviour ported as it is, for the user to decide
 

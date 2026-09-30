@@ -4,8 +4,9 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P0 of `pyvolis-build.md`. So far pyvolis finds and lists models; it doesn't
-listen or translate yet.
+Status: milestone P1 of `pyvolis-build.md`. So far pyvolis finds and lists models, captures
+from the microphone or a file, and cuts speech into utterances; it doesn't recognise or
+translate yet.
 
 ## Setup (development)
 
@@ -61,6 +62,23 @@ trust_remote_code = false
 
 Languages come from the model card's `language:` when there is one. Otherwise the model is
 listed as "languages unknown" and offered for every language.
+
+## Settings
+
+`volis.toml` is shared with Rust volis, same keys and meanings. Settings only pyvolis has go in
+`pyvolis.toml` beside it (Rust volis refuses sections it doesn't know). All optional:
+
+```toml
+[vad]
+pre_roll_ms = 600   # audio kept from before each utterance; 0 = off
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m pyvolis --devices        # names for [audio] in volis.toml
+.	estsetch-fixtures.ps1                               # test clips (development)
+.\.venv\Scripts\python.exe scriptsad_cuts.py --wav   # cut points with and without pre-roll
+.\.venv\Scripts\python.exe scriptsad_cuts.py --mic 20 --wav
+```
 
 ## Checking against Rust volis
 

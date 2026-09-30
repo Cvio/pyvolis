@@ -62,5 +62,5 @@ function; no settings no milestone needs.
 
 ## Status
 
-P0 done (skeleton, config, discovery, report, doctor, fetch-model, offline test). See
+P0 and P1 done (discovery, report, doctor, capture, file source, VAD, pre-roll). See
 `HANDOFF.md`.

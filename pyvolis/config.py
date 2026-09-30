@@ -199,6 +199,55 @@ class Config:
             raise ConfigError(f"failed to write {path.absolute()}: {e}") from e
 
 
+# ---------------------------------------------------------------- pyvolis.toml
+
+
+@dataclass
+class PyVad:
+    # Audio restored before each utterance. Rust's fixed value is 600 ms;
+    # 0 turns the pre-roll off, to measure what it does.
+    pre_roll_ms: int = 600
+
+
+@dataclass
+class PyvolisConfig:
+    """`pyvolis.toml` at the app root: settings Rust volis doesn't have.
+
+    Separate from volis.toml because Rust refuses unknown sections there.
+    Same rules as volis.toml: unknown keys are errors, a missing key takes its
+    default, a missing file means all defaults.
+    """
+
+    vad: PyVad = field(default_factory=PyVad)
+
+    @classmethod
+    def load(cls, path: Path) -> tuple[PyvolisConfig, bool]:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return cls(), False
+        except OSError as e:
+            raise ConfigError(f"failed to read {path.absolute()}: {e}") from e
+        try:
+            data = tomlkit.parse(text).unwrap()
+        except Exception as e:
+            raise ConfigError(f"failed to parse {path.absolute()}: {e}") from e
+        config = cls()
+        sections = {f.name for f in dataclasses.fields(cls)}
+        try:
+            for name, value in data.items():
+                if name not in sections:
+                    raise ConfigError(
+                        f"unknown section [{name}], expected one of: {', '.join(sorted(sections))}"
+                    )
+                if not isinstance(value, dict):
+                    raise ConfigError(f"[{name}] must be a table")
+                setattr(config, name, _fill(name, getattr(config, name), value))
+        except ConfigError as e:
+            raise ConfigError(f"failed to parse {path.absolute()}: {e}") from e
+        return config, True
+
+
 def _fill(section_name: str, section: Any, values: dict[str, Any]) -> Any:
     """A copy of `section` with `values` applied, checking names and types."""
     fields = {f.name: f for f in dataclasses.fields(section)}
