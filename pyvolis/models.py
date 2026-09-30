@@ -382,7 +382,8 @@ def card_languages(directory: Path) -> list[str] | None:
         value = [value]
     if not isinstance(value, list):
         return None
-    languages = [str(v).strip().lower() for v in value if str(v).strip()]
+    # Cards may repeat a code (MMS lists "qu" 22 times, one per variety).
+    languages = list(dict.fromkeys(str(v).strip().lower() for v in value if str(v).strip()))
     # "multilingual" says nothing about which languages.
     languages = [v for v in languages if v != "multilingual"]
     return languages or None
