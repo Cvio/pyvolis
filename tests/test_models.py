@@ -359,3 +359,14 @@ def test_an_empty_translator_folder_is_listed_with_the_reason(tmp_path):
     (tmp_path / "empty").mkdir()
     [entry] = models.discover_translators(tmp_path)
     assert isinstance(entry, Failed) and str((tmp_path / "empty").absolute()) in entry.error
+
+
+def test_a_processor_config_stands_in_for_a_preprocessor_config(tmp_path):
+    """Newer transformers layouts ship processor_config.json only
+    (oddadmix/whisper-large-v3-turbo-arabic-dialectal)."""
+    d = model(tmp_path, "new-layout", None, ["model.safetensors"], config__json=WHISPER_CONFIG,
+              processor_config__json="{}")
+    [engine] = models.discover(tmp_path, Role.ASR)
+    assert engine.enabled(), engine.missing_files()
+    assert [f.name for f in engine.files if f.role == "preprocessor"] == ["processor_config.json"]
+    del d

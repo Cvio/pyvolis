@@ -462,10 +462,21 @@ def _transformers_asr(directory: Path, overrides: dict[str, Any]) -> Engine:
         engine.files.append(
             ModelFile("weights", "*.safetensors or pytorch_model.bin", directory, False)
         )
-    preprocessor = directory / "preprocessor_config.json"
-    engine.files.append(
-        ModelFile("preprocessor", preprocessor.name, preprocessor, preprocessor.is_file())
-    )
+    # The feature extractor's settings: preprocessor_config.json, or in newer
+    # transformers layouts, processor_config.json holding them all.
+    for name in ("preprocessor_config.json", "processor_config.json"):
+        if (directory / name).is_file():
+            engine.files.append(ModelFile("preprocessor", name, directory / name, True))
+            break
+    else:
+        engine.files.append(
+            ModelFile(
+                "preprocessor",
+                "preprocessor_config.json or processor_config.json",
+                directory / "preprocessor_config.json",
+                False,
+            )
+        )
     if "auto_map" in config and not overrides.get("trust_remote_code", False):
         engine.unusable = (
             "the model needs its own code (auto_map in config.json); set "

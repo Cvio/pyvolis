@@ -27,7 +27,9 @@ from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError  # no
 
 # Never wanted: other frameworks' weights and exports.
 ALWAYS_SKIP = ["*.h5", "*.msgpack", "*.ot", "*.onnx", "*.onnx_data", "onnx/*", "flax_model*", "tf_model*",
-               "*.mlmodel", "*.tflite", "coreml/*", "openvino/*"]
+               "*.mlmodel", "*.tflite", "coreml/*", "openvino/*",
+               # training logs some repos publish
+               "runs/*", "*.tfevents.*"]
 DUPLICATE_WEIGHTS = ["*.bin", "*.pt", "*.pth", "*.ckpt"]
 
 
