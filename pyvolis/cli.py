@@ -25,6 +25,8 @@ USAGE:
 COMMANDS:
     (none)              Open the window
     --report            Print the discovered models and exit
+    --report --load     Also load each usable model in turn and print where it
+                        runs, its memory (GPU and system) and its load time
     --devices           List audio input and output devices and exit
     --listen            Capture from the microphone and transcribe
     --translate <TEXT>  Translate one sentence and print it
@@ -77,6 +79,7 @@ class Command:
     fast: bool = False
     export: str = ""
     translate: bool = True
+    load: bool = False  # --report --load
 
 
 def parse(args: list[str]) -> Command:
@@ -86,6 +89,8 @@ def parse(args: list[str]) -> Command:
     if first in ("-h", "--help"):
         return Command("help")
     if first == "--report":
+        if rest == ["--load"]:
+            return Command("report", load=True)
         _reject_extra(rest)
         return Command("report")
     if first == "--devices":
@@ -183,8 +188,9 @@ def run(args: list[str], root: Path) -> int:
         print(f"config:   {config_path} (not present; using the defaults)")
 
     if command.name == "gui":
-        print("The window arrives at P5. For now: pyvolis --report", file=sys.stderr)
-        return 2
+        from .gui import window
+
+        return window.run(root, config)
     if command.name == "listen":
         from . import listen
         from .pipeline import Options
@@ -199,7 +205,7 @@ def run(args: list[str], root: Path) -> int:
             Path(command.path), command.source, command.target, command.asr, command.mt, command.prompt,
             command.fast, Path(command.export) if command.export else None, command.translate,
         ))
-    return run_report(root, config)
+    return run_report(root, config, command.load)
 
 
 def run_translate(root: Path, config: Config, command: Command) -> int:
@@ -270,7 +276,7 @@ def _print_device_list(title: str, setting: str, devices: list) -> None:
         print(f"  {'*' if device.is_default else ' '} {device.name}{config}")
 
 
-def run_report(root: Path, config: Config) -> int:
+def run_report(root: Path, config: Config, load: bool = False) -> int:
     models_root = paths.models_dir(root)
     if not models_root.is_dir():
         print(
@@ -295,6 +301,8 @@ def run_report(root: Path, config: Config) -> int:
     report.print_summary(models.Role.TTS, tts)
     report.print_translator_summary(translators)
     report.report_selection(config, asr)
+    if load:
+        report.print_loaded(root, asr, tts, translators)
     return 0
 
 

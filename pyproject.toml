@@ -67,3 +67,7 @@ llama-cpp-python = { path = "wheels/llama_cpp_python-0.3.35-py3-none-win_amd64.w
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # sounddevice sets an array's shape in place, which NumPy 2.5 deprecates.
+    "ignore:Setting the shape on a NumPy array:DeprecationWarning",
+]

@@ -20,6 +20,7 @@ Two threads, as in Rust:
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import queue
 import sys
@@ -56,10 +57,34 @@ class Device:
     index: int = -1
 
 
-def _sd():
-    import sounddevice
+# Every PortAudio call that opens, starts, stops or closes a stream runs on
+# this one thread, whoever asks, and PortAudio itself is initialised on it
+# (sounddevice initialises PortAudio when it is first imported). On Windows
+# (WASAPI through PortAudio), a stream fails to start ("Unanticipated host
+# error") when it is opened on a different thread from the one that
+# initialised PortAudio, and pyvolis opens streams from the pipeline's thread
+# (capture, the voice) and the window's (playing a row, the original).
+# Callbacks still run on PortAudio's own device threads.
+_audio_thread = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="pyvolis-audio")
 
-    return sounddevice
+
+def _sd():
+    """sounddevice, imported (and so PortAudio initialised) on the audio thread."""
+
+    def load():
+        import sounddevice
+
+        return sounddevice
+
+    return on_audio_thread(load)
+
+
+def on_audio_thread(fn, *args, **kwargs):
+    """Run a PortAudio call on the audio thread and return its result (or
+    raise its exception) here."""
+    if threading.current_thread().name.startswith("pyvolis-audio"):
+        return fn(*args, **kwargs)
+    return _audio_thread.submit(fn, *args, **kwargs).result()
 
 
 def _wasapi() -> dict:
@@ -75,6 +100,10 @@ def _wasapi() -> dict:
 
 
 def _list(kind: str) -> list[Device]:
+    return on_audio_thread(_list_now, kind)
+
+
+def _list_now(kind: str) -> list[Device]:
     sd = _sd()
     api = _wasapi()
     channels_key = f"max_{kind}_channels"
@@ -189,7 +218,7 @@ def spawn_capture(device_name: str, out: queue.Queue) -> CaptureHandle:
     opened is an error from this call, not a silent no-op."""
     sd = _sd()
     device = select_input_device(device_name)
-    info = sd.query_devices(device.index)
+    info = on_audio_thread(sd.query_devices, device.index)
     channels = int(info["max_input_channels"])
     rate = int(info["default_samplerate"])
     handle = CaptureHandle()
@@ -204,11 +233,19 @@ def spawn_capture(device_name: str, out: queue.Queue) -> CaptureHandle:
         except queue.Full:
             handle.dropped_chunks += 1
 
-    try:
+    def open_stream():
         stream = sd.InputStream(
             device=device.index, channels=channels, samplerate=rate, dtype="float32", callback=callback
         )
         stream.start()
+        return stream
+
+    def close_stream() -> None:
+        stream.stop()
+        stream.close()  # releases the device
+
+    try:
+        stream = on_audio_thread(open_stream)
     except Exception as e:  # PortAudioError and friends
         raise AudioError(f'cannot open input device "{device.name}": {e}') from e
 
@@ -228,8 +265,7 @@ def spawn_capture(device_name: str, out: queue.Queue) -> CaptureHandle:
                 except queue.Full:
                     log.debug("pipeline is behind; dropped a 16 kHz chunk")
         finally:
-            stream.stop()
-            stream.close()  # releases the device
+            on_audio_thread(close_stream)
             if handle.dropped_chunks:
                 log.warning(
                     "capture dropped %d chunk(s): the machine could not keep up", handle.dropped_chunks

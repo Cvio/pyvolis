@@ -147,3 +147,70 @@ def report_selection(config: Config, asr: list[Entry]) -> None:
         )
     else:
         print(f'  [asr].engine = "{selected}" is UNUSABLE - {entry.unusable}')
+
+
+def print_loaded(root: Path, asr: list[Entry], tts: list[Entry], translators: list[Translator | Failed]) -> None:
+    """--report --load: each usable model loaded in turn, one at a time, with
+    where it runs, the memory it takes and how long loading took. A model that
+    won't fit is refused with its size and what's free, never a crash."""
+    import time
+
+    from . import asr as asr_pkg
+    from . import translate as tr
+    from . import tts as tts_pkg
+    from .translate import prompts
+
+    print()
+    print("Loading each usable model in turn")
+    print(f"  {'ROLE':<11} {'MODEL':<46} {'DEVICE':<6} {'GPU':>8} {'SYSTEM':>8} {'LOAD':>7}")
+
+    def line(role: str, name: str, device: str, gpu: int, cpu: int, seconds: float, note: str = "") -> None:
+        print(f"  {role:<11} {name:<46} {device:<6} {gpu / 1e9:>6.1f} GB {cpu / 1e9:>6.1f} GB {seconds:>5.1f} s"
+              + (f"  {note}" if note else ""))
+
+    def failed(role: str, name: str, error: Exception) -> None:
+        print(f"  {role:<11} {name:<46} NOT LOADED: {error}")
+
+    for entry in asr:
+        if not isinstance(entry, Engine) or not entry.enabled():
+            continue
+        began = time.perf_counter()
+        try:
+            recognizer = asr_pkg.load(entry)
+        except asr_pkg.AsrError as e:
+            failed("recognizer", entry.dir_name, e)
+            continue
+        memory = recognizer.memory()
+        note = type(getattr(recognizer, "_model", None)).__name__ if entry.backend == "transformers" else entry.backend
+        line("recognizer", entry.dir_name, memory.device, memory.gpu_bytes, memory.cpu_bytes,
+             time.perf_counter() - began, note)
+        recognizer.close()
+    try:
+        prompt = prompts.load(paths.prompts_dir(root))
+    except prompts.PromptError as e:
+        print(f"  translators not loaded: {e}")
+        prompt = None
+    for t in translators if prompt else []:
+        if not isinstance(t, Translator) or not t.enabled():
+            continue
+        began = time.perf_counter()
+        try:
+            translator = tr.load(t, prompt)
+        except tr.TranslateError as e:
+            failed("translator", t.id, e)
+            continue
+        on_gpu = translator.device == "cuda"
+        line("translator", t.id, translator.device, t.size_bytes if on_gpu else 0, 0 if on_gpu else t.size_bytes,
+             time.perf_counter() - began, t.architecture)
+        translator.close()
+    for entry in tts:
+        if not isinstance(entry, Engine) or not entry.enabled():
+            continue
+        began = time.perf_counter()
+        try:
+            tts_pkg.Voice(entry)
+        except tts_pkg.TtsError as e:
+            failed("voice", entry.dir_name, e)
+            continue
+        size = sum(f.path.stat().st_size for f in entry.files if f.present)
+        line("voice", entry.dir_name, "cpu", 0, size, time.perf_counter() - began, entry.backend)

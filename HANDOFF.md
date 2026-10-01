@@ -25,7 +25,13 @@ Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   (`sentences.py`), a translation thread, the events (`events.py`), the export folder
   (`export.py`) and quick scores (`scoring.py`, with model-bench's `textclean.py` copied
   verbatim). `scripts/make_fixture_file.py` builds test recordings with references.
-- Next: P5 (the window, with file mode). The user tries file mode first.
+- **P5 built; its check is the user's to run** (open a file in the window, watch, click a row,
+  export; a live conversation; Arabic and Persian right to left). The window (`gui/window.py`,
+  drawing `gui/session.py`), voice output (`tts.py`, `playback.py`, the half-duplex gate), and
+  `--report --load`. Checked without a person: `scripts/window_check.py` (the window through a
+  file run, offscreen, with a responsiveness measurement), `scripts/gate_check.py` (does pyvolis
+  hear itself, through the VB-Audio cable).
+- Next: P6 (continuous and turn-based modes). Wait for the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -117,6 +123,39 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
 24. **A stall probe** (a 50 ms timer on its own thread) reports when every Python thread is held
     up, the early warning for the window's responsiveness. Worst stall so far: 0 ms, with
     Whisper (GPU) and Qwen3 (CPU) running together.
+
+25. **The window is Qt (PySide6), and its pane is a table,** one row per sentence: time, source,
+    translation, notes. Rust's egui window shows a card per utterance. The same rows are the
+    live captions and the file timeline. `Session` keeps Rust's shape and tests where they apply.
+26. **Every PortAudio stream is opened on one audio thread** (`audio.on_audio_thread`), and
+    PortAudio is initialised on it. Through PortAudio's WASAPI backend, a stream fails to start
+    ("Unanticipated host error") when opened on a thread other than the one that initialised
+    PortAudio, and pyvolis opens streams from the pipeline's thread and the window's. cpal has
+    no such restriction.
+27. **The voice speaks sentence by sentence** (translation is per sentence), and "first audio"
+    is timed from when the utterance was cut, as in Rust.
+28. **Voice output in file mode is off by default** and has its own switch that is never saved;
+    the half-duplex gate doesn't apply to a file.
+29. **`--report --load`** loads each usable model in turn and prints device, memory and load
+    time (Rust has no equivalent).
+
+## P5 findings
+
+- **Responsiveness** (`scripts/window_check.py`, Arabic file, Cohere on the GPU and Qwen3 on the
+  CPU, fast): the window thread's 20 ms timer ran at a median of 20 ms, 99th percentile about
+  36 ms, longest freeze about 180 ms (once, at the start of a run); the pipeline's own stall
+  probe reported 0 ms. No library holds Python's lock for long. Scoring a file at the end froze
+  the window for 380 ms until it was moved to its own thread.
+- **The gate** (`scripts/gate_check.py`): with the cable as both microphone and speakers,
+  half-duplex on gave only the Spanish that was played; off, pyvolis also transcribed its own
+  English voice and tried to translate it. As in Rust, speech that overlaps the voice is lost.
+- **Right to left:** alignment isn't enough. A cell needs a right-to-left base direction
+  (`DirectionDelegate`), or the final full stop and embedded numbers land on the wrong side.
+- **Memory, measured by `--report --load`:** Cohere 4.1 GB, MMS 1.9 GB, Whisper turbo through
+  transformers 1.6 GB each (all GPU); the sherpa models 0.7 to 1.0 GB and the translators 1.1
+  and 2.5 GB (system memory).
+- llama.cpp prints one line to stderr when Gemma loads (`llama_kv_cache_iswa: ...`) despite
+  `verbose=False`. Harmless.
 
 ## P4 findings
 

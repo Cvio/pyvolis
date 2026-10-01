@@ -272,6 +272,28 @@ class PyvolisConfig:
         return config, True
 
 
+def save_pyvolis_selections(path: Path, pyconfig: PyvolisConfig) -> None:
+    """Write back what the window can change in pyvolis.toml (the translator
+    and the prompt), keeping everything else and every comment, as
+    `Config.save_selections` does for volis.toml."""
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = ""
+    except OSError as e:
+        raise ConfigError(f"failed to read {path.absolute()}: {e}") from e
+    try:
+        doc = tomlkit.parse(existing)
+    except Exception as e:
+        raise ConfigError(f"failed to parse {path.absolute()}; not overwriting it: {e}") from e
+    _set(doc, "translate", "model", pyconfig.translate.model)
+    _set(doc, "translate", "prompt", pyconfig.translate.prompt)
+    try:
+        path.write_text(tomlkit.dumps(doc), encoding="utf-8", newline="")
+    except OSError as e:
+        raise ConfigError(f"failed to write {path.absolute()}: {e}") from e
+
+
 def _fill(section_name: str, section: Any, values: dict[str, Any]) -> Any:
     """A copy of `section` with `values` applied, checking names and types."""
     fields = {f.name: f for f in dataclasses.fields(section)}

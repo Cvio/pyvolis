@@ -54,6 +54,8 @@ function; no settings no milestone needs.
   `volis.toml`.
 - `models\mt\`: Rust uses exactly one `.gguf` at the top level and refuses to start with two.
   Extra translators go one folder per model inside it, which Rust never looks at.
+- Open, start, stop and close every audio stream through `audio.on_audio_thread`, and get
+  sounddevice through `audio._sd()`: PortAudio only works from the thread that initialised it.
 - `paths.app_root()` is the only path-derivation function. `pyvolis/__main__.py` sets the
   offline environment before importing anything else; keep it that way.
 - Commit after each milestone. Tests pass at every commit (`.venv\Scripts\python.exe -m pytest`).
@@ -62,5 +64,5 @@ function; no settings no milestone needs.
 
 ## Status
 
-P0 to P4 done (discovery, capture, VAD, recognizers, guards, translators, --file with export).
-See `HANDOFF.md`.
+P0 to P4 done; P5 (the window, voice output, file mode in the window) built, its check by hand
+pending. See `HANDOFF.md`.

@@ -134,6 +134,9 @@ def test_a_hallucination_is_dropped_and_reported_with_its_reason(monkeypatch, ca
         def prepare(self, language):
             pass
 
+        def memory(self):
+            return asr.Memory()
+
         def close(self):
             pass
 

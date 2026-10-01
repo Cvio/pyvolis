@@ -69,6 +69,32 @@ class Configuration(Event):
 
 
 @dataclass
+class Loading(Event):
+    """A model is being loaded; the window shows "Loading..."."""
+
+    what: str
+
+
+@dataclass
+class ModelLoaded(Event):
+    """A model is in memory: what it is, where, and how much it takes."""
+
+    role: str  # "recognizer" | "translator" | "voice"
+    name: str
+    device: str  # "cpu" | "cuda"
+    gpu_bytes: int = 0
+    cpu_bytes: int = 0
+    seconds: float = 0.0
+
+
+@dataclass
+class Level(Event):
+    """Peak input level over the last 200 ms, in dBFS; None = digital silence."""
+
+    db: float | None
+
+
+@dataclass
 class Listening(Event):
     """The source is open; --seconds counts from here."""
 
@@ -188,6 +214,21 @@ class NotTranslated(Event):
     id: str
     reason: str
     guard: str = ""  # "echo" | "recited" | "too long" | "" for errors and drops
+
+
+@dataclass
+class SpeakingStarted(Event):
+    """Speech reached the sound card. `first_audio_ms` runs from the moment
+    the utterance was cut, through recognition, translation and synthesis."""
+
+    id: str
+    first_audio_ms: int
+    voice: str = ""
+
+
+@dataclass
+class SpeakingEnded(Event):
+    pass
 
 
 @dataclass

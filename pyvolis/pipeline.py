@@ -11,6 +11,9 @@ Threads, as Rust, with the costs in mind:
   pipeline                 VAD and recognition, one utterance at a time
   translation              its own thread, so a slow model never stalls
                            recognition; a queue of TRANSLATION_QUEUE sentences
+  speaking                 synthesis on its own thread; the sound card's
+                           callback plays it (playback.py), and the half-duplex
+                           gate keeps the microphone from hearing it
   stall probe              a 50 ms timer that reports when Python's threads
                            are held up (a library holding the GIL): the early
                            warning for the window's responsiveness (P5)
@@ -38,8 +41,9 @@ from .asr import guards as guards_mod
 from .audio import SAMPLE_RATE
 from .config import Config, PyvolisConfig
 from .events import (  # noqa: F401 - re-exported for consumers
-    ComparisonMsg, Dropped, Error, Event, Final, Listening, NothingRecognized, NotTranslated,
-    Progress, SentenceMsg, SpeechStarted, Stall, Stopped, Summary, Translated,
+    ComparisonMsg, Dropped, Error, Event, Final, Level, Listening, Loading, ModelLoaded, NothingRecognized,
+    NotTranslated, Progress, SentenceMsg, SpeakingEnded, SpeakingStarted, SpeechStarted, Stall, Stopped,
+    Summary, Translated,
 )
 from .ring import UtteranceRing
 from .vad import Segment, Segmenter, VadSettings
@@ -48,6 +52,9 @@ log = logging.getLogger(__name__)
 
 QUEUE_CHUNKS = 64  # source -> pipeline, about 6 s
 TRANSLATION_QUEUE = 4  # Rust's TRANSLATION_QUEUE
+SPEECH_QUEUE = 8  # sentences waiting to be spoken
+LEVEL_EVENT = 0.2  # seconds between Level events (Rust's LEVEL_EVENT)
+LEVEL_LOG = 5.0  # seconds between level lines in the log (Rust's LEVEL_LOG)
 STALL_TICK = 0.05  # the stall probe's timer
 STALL_REPORT_MS = 150  # lateness worth an event
 
@@ -57,6 +64,8 @@ class Options:
     write_wav: bool = False  # each utterance to logs/segments/
     compare: bool = False  # every usable recognizer on each utterance
     translate: bool = True
+    # Voice output. None = [tts].enabled for the microphone, off for a file.
+    speak: bool | None = None
     # Overrides for one run (file mode's --asr / --mt / --prompt); "" = settings.
     asr: str = ""
     mt: str = ""
@@ -235,7 +244,13 @@ class Pipeline:
         if engine is None:  # never substitute a different one
             raise asr_pkg.AsrError(f'recognizer "{selected}" was not found in {paths.asr_dir(self.root)}; run --report')
         self.recognizer_name = selected
-        return asr_pkg.load(engine)
+        self.emit(Loading(f"recognizer {selected}"))
+        began = time.perf_counter()
+        recognizer = asr_pkg.load(engine)
+        memory = recognizer.memory()
+        self.emit(ModelLoaded("recognizer", selected, memory.device, memory.gpu_bytes, memory.cpu_bytes,
+                              time.perf_counter() - began))
+        return recognizer
 
     def _translator(self):
         from .translate import prompts
@@ -243,7 +258,25 @@ class Pipeline:
         entry = tr.choose(self.root, self.options.mt or self.pyconfig.translate.model)
         prompt = prompts.load(paths.prompts_dir(self.root), self.options.prompt or self.pyconfig.translate.prompt)
         self.translator_name = entry.id
-        return tr.load(entry, prompt)
+        self.emit(Loading(f"translator {entry.id}"))
+        began = time.perf_counter()
+        translator = tr.load(entry, prompt)
+        on_gpu = translator.device == "cuda"
+        self.emit(ModelLoaded("translator", entry.id, translator.device, entry.size_bytes if on_gpu else 0,
+                              0 if on_gpu else entry.size_bytes, time.perf_counter() - began))
+        return translator
+
+    def _speaker(self, live: bool):
+        """The voice, when this run speaks: the player, its gate, and the
+        speaking thread. A file has no microphone to protect, so no gate."""
+        from . import playback
+
+        wanted = self.options.speak if self.options.speak is not None else (live and self.config.tts.enabled)
+        gate = playback.Gate(enabled=live and self.config.tts.half_duplex)
+        if not wanted or not self.options.translate or self.options.compare:
+            return gate, None
+        player = playback.Player(self.config.audio.output_device, gate, on_ended=lambda: self.emit(SpeakingEnded()))
+        return gate, SpeakThread(self, player)
 
     def _loop(self) -> None:
         root, config = self.root, self.config
@@ -253,7 +286,11 @@ class Pipeline:
         recognizer.prepare(language)
         # Loaded here, on the pipeline thread before any audio, so a missing
         # or broken translator is an error now rather than a thread that dies later.
-        translation = TranslationThread(self, self._translator(), target) if self.options.translate else None
+        live = not self.source.lossless
+        gate, speaker = self._speaker(live)
+        translation = TranslationThread(self, self._translator(), target, speaker) if self.options.translate else None
+        if speaker is not None:
+            speaker.prepare(target)
 
         guards = self._guards()
         comparison = compare.Engines(engines) if self.options.compare else None
@@ -282,6 +319,7 @@ class Pipeline:
         self.source.start(chunks)
         self.emit(Listening())
         speaking, consumed, reported = False, 0, 0.0
+        event_level, log_level = LevelMeter(LEVEL_EVENT), LevelMeter(LEVEL_LOG)
         try:
             while not self._stop.is_set():
                 try:
@@ -291,6 +329,23 @@ class Pipeline:
                         break
                     continue
                 consumed += len(chunk)
+                # Half-duplex: while our own speech is playing, captured audio
+                # is discarded and the detector held reset, so nothing of it
+                # survives into the next utterance.
+                if gate.is_closed():
+                    segmenter.reset(consumed)
+                    speaking = False
+                    continue
+                if live:
+                    event_level.observe(chunk)
+                    log_level.observe(chunk)
+                    if (due := event_level.take_if_due()) is not None:
+                        self.emit(Level(due[0]))
+                    if (due := log_level.take_if_due()) is not None:
+                        if due[0] is None:
+                            log.warning("input level: digital silence over the last %d s - is the microphone muted?", LEVEL_LOG)
+                        else:
+                            log.info("input level: peak %.1f dBFS over the last %d s", due[0], LEVEL_LOG)
                 for segment in segmenter.push(chunk):
                     handle(segment)
                 now = segmenter.speech_in_progress()
@@ -313,6 +368,8 @@ class Pipeline:
             self.source.stop()
             if translation is not None:
                 translation.finish(wait=not self._stop.is_set())
+            if speaker is not None:
+                speaker.finish(wait=not self._stop.is_set())
             probe.stop()
             recognizer.close()
             if comparison is not None:
@@ -326,6 +383,7 @@ class Pipeline:
 
     def _handle(self, segment: Segment, recognizer, language, ring, guards, comparison, segments_dir, translation) -> None:
         utterance = ring.push(segment.start_ms(), segment.samples)
+        cut_at = time.monotonic()
         start, end = segment.start_sample / SAMPLE_RATE, segment.start_sample / SAMPLE_RATE + len(segment.samples) / SAMPLE_RATE
         log.info("utterance %d: %d ms .. %d ms (%d ms)", utterance.index, segment.start_ms(),
                  segment.end_ms(), segment.duration_ms())
@@ -365,7 +423,7 @@ class Pipeline:
                     self.emit(SentenceMsg(sentence.id, sentence.utterance, sentence.text, language,
                                           sentence.start, sentence.end, sentence.approximate))
                     if translation is not None:
-                        translation.submit(sentence, language)
+                        translation.submit(sentence, language, cut_at)
         if comparison is not None:
             table = compare.run_all(comparison, utterance, language, guards)
             compare.report(table, self.recognizer_name)
@@ -377,16 +435,17 @@ class Pipeline:
 class TranslationThread:
     """Rust's spawn_translator: its own thread, a small queue."""
 
-    def __init__(self, pipeline: Pipeline, translator, target: str) -> None:
+    def __init__(self, pipeline: Pipeline, translator, target: str, speaker=None) -> None:
         self.pipeline = pipeline
         self.translator = translator
         self.target = target
+        self.speaker = speaker
         self.queue: queue.Queue = queue.Queue(TRANSLATION_QUEUE)
         self._thread = threading.Thread(target=self._run, name="pyvolis-translate", daemon=True)
         self._thread.start()
 
-    def submit(self, sentence: sentences.Sentence, source: str) -> None:
-        job = (sentence, source)
+    def submit(self, sentence: sentences.Sentence, source: str, cut_at: float = 0.0) -> None:
+        job = (sentence, source, cut_at)
         if self.pipeline.source.lossless:
             self.queue.put(job)  # a file waits rather than lose a sentence
             return
@@ -409,7 +468,7 @@ class TranslationThread:
     def _run(self) -> None:
         stats, emit = self.pipeline.stats, self.pipeline.emit
         while (job := self.queue.get()) is not None:
-            sentence, source = job
+            sentence, source, cut_at = job
             try:
                 result = self.translator.translate(tr.TranslationRequest(sentence.text, source, self.target))
             except tr.Refused as e:
@@ -432,7 +491,113 @@ class TranslationThread:
             log.info("sentence %s\n  [%s] %s\n  [%s] %s\n  (%d ms to translate on the %s)", sentence.id, source,
                      sentence.text, self.target, result.text, ms, result.device.upper())
             emit(Translated(sentence.id, result.text, self.target, ms, result.device, self.pipeline.translator_name))
+            if self.speaker is not None:
+                self.speaker.submit(sentence.id, result.text, self.target, cut_at)
         log.info("translation stopped")
+
+
+class SpeakThread:
+    """Rust's spawn_speaker: synthesis and playback for everything this PC
+    says. A voice is chosen per sentence by its language and loaded the first
+    time it is needed."""
+
+    def __init__(self, pipeline: Pipeline, player) -> None:
+        self.pipeline = pipeline
+        self.player = player
+        self.voices = [e for e in models.discover(paths.tts_dir(pipeline.root), models.Role.TTS)
+                       if isinstance(e, models.Engine)]
+        self.loaded: dict = {}
+        self.queue: queue.Queue = queue.Queue(SPEECH_QUEUE)
+        self._thread = threading.Thread(target=self._run, name="pyvolis-speak", daemon=True)
+        self._thread.start()
+
+    def prepare(self, language: str) -> None:
+        """Load the voice expected, at start, so the first sentence doesn't wait.
+        A language with no voice is reported now, not at the first sentence."""
+        try:
+            self._voice(language)
+        except Exception as e:
+            log.warning("%s", e)
+            self.pipeline.emit(Error(f"translations into {language} will not be spoken: {e}"))
+
+    def _voice(self, language: str):
+        from . import tts
+
+        engine = tts.for_language(self.voices, language)
+        if engine.dir_name not in self.loaded:
+            self.pipeline.emit(Loading(f"voice {engine.dir_name}"))
+            began = time.perf_counter()
+            self.loaded[engine.dir_name] = tts.Voice(engine)
+            size = sum(f.path.stat().st_size for f in engine.files if f.present)
+            self.pipeline.emit(ModelLoaded("voice", engine.dir_name, "cpu", 0, size, time.perf_counter() - began))
+        return self.loaded[engine.dir_name]
+
+    def submit(self, sentence_id: str, text: str, language: str, cut_at: float) -> None:
+        try:
+            self.queue.put_nowait((sentence_id, text, language, cut_at))
+        except queue.Full:
+            log.warning("speech is behind; sentence %s not spoken", sentence_id)
+            self.pipeline.emit(Error(f"speech fell behind the conversation; sentence {sentence_id} was not spoken"))
+
+    def finish(self, wait: bool) -> None:
+        if not wait:
+            while not self.queue.empty():
+                self.queue.get_nowait()
+            self.player.control().stop()
+        self.queue.put(None)
+        self._thread.join()
+        if wait:  # let what is queued for the sound card play out
+            while self.player.queued() > 0:
+                time.sleep(0.05)
+        self.player.close()
+
+    def _run(self) -> None:
+        emit = self.pipeline.emit
+        while (job := self.queue.get()) is not None:
+            sentence_id, text, language, cut_at = job
+            label = f"sentence {sentence_id}"
+            try:
+                voice = self._voice(language)
+                began = time.perf_counter()
+                speech = voice.speak(text)
+            except Exception as e:
+                log.warning("%s was not spoken: %s", label, e)
+                emit(Error(f"{label} was not spoken: {e}"))
+                continue
+            if len(speech.samples) == 0:
+                log.warning("%s: the voice produced no audio", label)
+                emit(Error(f"{label}: the voice produced no audio"))
+                continue
+            synthesised_ms = int((time.perf_counter() - began) * 1000)
+            self.player.play(speech.samples, speech.sample_rate)
+            # From the moment the utterance was cut, through recognition,
+            # translation and synthesis, to the sound card.
+            first_audio_ms = int((time.monotonic() - cut_at) * 1000) if cut_at else synthesised_ms
+            log.info("  speaking %s: %d ms (%d ms to synthesise, %d ms to first audio)", label,
+                     speech.duration_ms(), synthesised_ms, first_audio_ms)
+            emit(SpeakingStarted(sentence_id, first_audio_ms, voice.name))
+        log.info("speaking stopped")
+
+
+class LevelMeter:
+    """Peak input level over a window (Rust's LevelMeter)."""
+
+    def __init__(self, every: float) -> None:
+        self.every = every
+        self.peak = 0.0
+        self.since = time.monotonic()
+
+    def observe(self, chunk: np.ndarray) -> None:
+        if len(chunk):
+            self.peak = max(self.peak, float(np.abs(chunk).max()))
+
+    def take_if_due(self):
+        """When the window has elapsed: a one-item tuple holding the peak in
+        dBFS, or None for digital silence. Otherwise None."""
+        if time.monotonic() - self.since < self.every:
+            return None
+        peak, self.peak, self.since = self.peak, 0.0, time.monotonic()
+        return (20.0 * float(np.log10(peak)) if peak > 0 else None,)
 
 
 class StallProbe:

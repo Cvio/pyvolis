@@ -4,9 +4,9 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P4 of `pyvolis-build.md`. pyvolis transcribes and translates audio files
-(`--file`) and the microphone (`--listen`) with any installed recognizer and GGUF translator.
-The window arrives at P5.
+Status: milestone P5 of `pyvolis-build.md`. pyvolis has its window: live translation from the
+microphone with voice output, and file mode with a timeline and export. Turn-taking, pairing
+and the shared machine arrive at P6, P9 and P10.
 
 ## Setup (development)
 
@@ -62,6 +62,25 @@ trust_remote_code = false
 
 Languages come from the model card's `language:` when there is one. Otherwise the model is
 listed as "languages unknown" and offered for every language.
+
+## The window
+
+```powershell
+.\.venv\Scripts\python.exe -m pyvolis
+```
+
+Pick what is spoken and what to translate into; the recognizer list is ordered for that
+language (tuned for the variety, general, other varieties, then models that don't say which
+languages they know). **Start** listens to the microphone, shows each sentence and its
+translation, and speaks the translation. Half-duplex mutes the microphone while pyvolis speaks;
+turn it off only with headphones.
+
+**File** mode: open a recording (File > Open, or drop it on the window), choose Real time or
+Fast, and Start. Each row is a sentence; clicking a row plays that stretch of the recording.
+Pause and Stop work at any point, and **Export** writes the folder described below. Arabic and
+Persian are laid out right to left.
+
+`--report --load` loads every model in turn and prints where it runs and the memory it takes.
 
 ## Translating a file
 
