@@ -235,7 +235,7 @@ def run_translate(root: Path, config: Config, command: Command) -> int:
         pyconfig, _ = PyvolisConfig.load(paths.pyvolis_config_file(root))
         entry = translate.choose(root, command.mt or pyconfig.translate.model)
         prompt = prompts.load(paths.prompts_dir(root), command.prompt or pyconfig.translate.prompt)
-        translator = translate.load(entry, prompt)
+        translator = translate.load(entry, prompt, pyconfig.translate.device)
     except (ConfigError, translate.TranslateError, prompts.PromptError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1

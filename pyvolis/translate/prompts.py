@@ -1,9 +1,11 @@
 """The translator's system text, from a prompt file in `prompts\\`.
 
-`prompts\\default.txt` is Rust volis's `system_prompt` (translate.rs), word
-for word. Other files in the folder are variants the user can pick
-(`[translate].prompt` in pyvolis.toml, by file name without `.txt`). Which
-variant is best is model-bench's question; pyvolis only loads the file.
+`prompts\\rust.txt` is Rust volis's prompt exactly: its `system_prompt`
+(translate.rs) word for word, and the text alone as the user turn.
+`prompts\\default.txt`, which pyvolis uses unless told otherwise, has the
+same system text and also frames the text (see below). Other files in the
+folder are variants the user can pick (`[translate].prompt` in pyvolis.toml,
+by file name without `.txt`).
 
 File format: plain text, with three placeholders filled from the varieties
 table:
@@ -14,6 +16,12 @@ table:
 
 Lines after a line reading `--- when the target is a variety ---` are added
 only when the target names a region (es-MX, ar-IQ), as Rust does.
+
+pyvolis only: lines after a line reading `--- the text ---` say how the text
+to translate is handed over, with `{text}` where it goes. Without that
+section the text is the whole user turn, as in Rust. Framing it ("Translate
+into {target}: ...") is what keeps a model from answering a question it was
+meant to translate; the system text alone doesn't.
 """
 
 from __future__ import annotations
@@ -24,7 +32,9 @@ from pathlib import Path
 from .. import varieties
 
 VARIETY_MARKER = "--- when the target is a variety ---"
+TEXT_MARKER = "--- the text ---"
 DEFAULT = "default"
+RUST = "rust"  # Rust volis's prompt, for parity checks
 
 
 class PromptError(Exception):
@@ -37,17 +47,30 @@ class PromptFile:
     path: Path
     base: str  # always used
     variety: str  # added when the target is a variety ("" if none)
+    wrap: str = ""  # how the text is handed over, with {text} ("" = the text alone)
 
     def system_text(self, source: str, target: str) -> str:
         """The system turn for this pair, exactly as Rust's system_prompt."""
-        source_name = prompt_name(source)
-        target_name = prompt_name(target)
-        article = "an" if target_name[:1] in "AEIOU" else "a"
-        fill = {"source": source_name, "target": target_name, "article": article}
+        fill = names(source, target)
         text = self.base.format(**fill)
         if self.variety and varieties.has_variety(target):
             text += "\n" + self.variety.format(**fill)
         return text
+
+    def user_text(self, text: str, source: str, target: str) -> str:
+        """The user turn: the text alone, or inside the file's wrapper."""
+        text = text.strip()
+        return self.wrap.format(text=text, **names(source, target)) if self.wrap else text
+
+    def wrapper(self, source: str, target: str) -> str:
+        """The wrapper's own words for this pair (for the recital guard)."""
+        return self.wrap.format(text="", **names(source, target)) if self.wrap else ""
+
+
+def names(source: str, target: str) -> dict[str, str]:
+    target_name = prompt_name(target)
+    return {"source": prompt_name(source), "target": target_name,
+            "article": "an" if target_name[:1] in "AEIOU" else "a"}
 
 
 def prompt_name(tag: str) -> str:
@@ -71,14 +94,20 @@ def load(folder: Path, name: str = DEFAULT) -> PromptFile:
     except OSError as e:
         raise PromptError(f"cannot read {path.absolute()}: {e}") from e
     text = text.replace("\r\n", "\n")
+    text, _, wrap = text.partition(TEXT_MARKER)
     base, _, variety = text.partition(VARIETY_MARKER)
-    base, variety = base.strip("\n"), variety.strip("\n")
+    base, variety, wrap = base.strip("\n"), variety.strip("\n"), wrap.strip("\n")
     try:
         base.format(source="", target="", article="")
         variety.format(source="", target="", article="")
+        wrap.format(source="", target="", article="", text="")
     except (KeyError, IndexError, ValueError) as e:
         raise PromptError(
             f"{path.absolute()} has a placeholder pyvolis doesn't fill ({e}); use only "
-            "{source}, {target} and {article}, and write a literal brace as {{ or }}"
+            "{source}, {target} and {article} (and {text} after the text marker), and write a "
+            "literal brace as {{ or }}"
         ) from e
-    return PromptFile(name, path, base, variety)
+    if wrap and "{text}" not in wrap:
+        raise PromptError(f'{path.absolute()}: the section after "{TEXT_MARKER}" has no {{text}}, '
+                          "so the text to translate would never reach the model")
+    return PromptFile(name, path, base, variety, wrap)

@@ -72,7 +72,7 @@ class Translator(Protocol):
     def close(self) -> None: ...
 
 
-def load(entry: TranslatorEntry, prompt: PromptFile) -> Translator:
+def load(entry: TranslatorEntry, prompt: PromptFile, device: str = "auto") -> Translator:
     if not entry.path.exists():
         raise TranslateError(
             f"translation model not found: {entry.path.absolute()}\npyvolis never downloads models; "
@@ -85,7 +85,7 @@ def load(entry: TranslatorEntry, prompt: PromptFile) -> Translator:
     if entry.backend == "llamacpp":
         from .llamacpp import LlamaTranslator
 
-        return LlamaTranslator(entry, prompt)
+        return LlamaTranslator(entry, prompt, device)
     raise TranslateError(f'translator "{entry.id}" has backend "{entry.backend}", which pyvolis can\'t run yet')
 
 
@@ -120,7 +120,10 @@ def translate_checked(translator, request: TranslationRequest, generate) -> Tran
         log.debug("translation cleaned from %r to %r", raw, cleaned)
     # Reciting the instructions, the glossary or the context is no translation.
     context = [t.source for t in request.context] + [t.translation for t in request.context]
-    if guards.leaks_the_prompt(cleaned, system_text(translator.prompt_file, request), context):
+    wrapper = translator.prompt_file.wrapper(request.source, request.target)
+    context.append(wrapper)
+    if guards.leaks_the_prompt(cleaned, system_text(translator.prompt_file, request), context) \
+            or guards.contains_the_wrapper(cleaned, wrapper):
         raise Refused(
             "recited",
             "the model recited its own instructions instead of translating. This happens when the "

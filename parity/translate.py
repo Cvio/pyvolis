@@ -44,7 +44,7 @@ def main(argv: list[str]) -> int:
         raise SystemExit(f"STOP: no output device named {CABLE_IN!r}; install the VB-Audio Virtual Cable")
     rate = int(devices[CABLE_IN].default_config.split(", ")[1].split()[0])
     entry = tr.choose(REPO, "qwen3-1.7b-q4_k_m.gguf")
-    translator = tr.load(entry, prompts.load(paths.prompts_dir(REPO)))
+    translator = tr.load(entry, prompts.load(paths.prompts_dir(REPO), prompts.RUST), "cpu")
     rows = []
     for name in sets:
         source, target = LANGUAGE[name]

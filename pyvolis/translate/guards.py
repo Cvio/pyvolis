@@ -39,6 +39,13 @@ def leaks_the_prompt(output: str, system_text: str, context: list[str] | None = 
     return any(recited in normalise(text) for text in context or [])
 
 
+def contains_the_wrapper(output: str, wrapper: str) -> bool:
+    """pyvolis: did the words a prompt file puts around the text come back in
+    the output (with the text after them, typically)?"""
+    words = normalise(wrapper)
+    return len(words.split()) >= MIN_RECITED_WORDS and words in normalise(output)
+
+
 def is_implausibly_long(source: str, output: str) -> bool:
     """Translations are roughly as long as their source; short utterances do
     expand ("Que?" -> "What did you say?"), hence the generous floor."""

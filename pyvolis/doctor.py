@@ -259,6 +259,9 @@ def check_llama(r: Report) -> None:
         r.results["llama_cpp"] = {"installed": False}
         return
     try:
+        from .translate.llamacpp import load_cuda_runtime
+
+        load_cuda_runtime()  # a GPU build needs PyTorch's CUDA files loaded first
         import llama_cpp
     except Exception as e:  # noqa: BLE001
         r.fail("llama_cpp", f"import llama_cpp failed: {e}")

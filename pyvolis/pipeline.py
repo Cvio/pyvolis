@@ -305,6 +305,14 @@ class Pipeline:
         self.emit(Loading(f"recognizer {selected}"))
         began = time.perf_counter()
         recognizer = asr_pkg.load(engine)
+        # A GPU model's first pass is several times slower than the rest;
+        # spend it here rather than on the first thing the user says.
+        warm_up = getattr(recognizer, "warm_up", None)
+        if warm_up is not None:
+            try:
+                warm_up(self.config.languages.source)
+            except Exception as e:  # a warm-up that fails changes nothing
+                log.debug("warm-up pass failed: %s", e)
         memory = recognizer.memory()
         self.emit(ModelLoaded("recognizer", selected, memory.device, memory.gpu_bytes, memory.cpu_bytes,
                               time.perf_counter() - began))
@@ -318,7 +326,7 @@ class Pipeline:
         self.translator_name = entry.id
         self.emit(Loading(f"translator {entry.id}"))
         began = time.perf_counter()
-        translator = tr.load(entry, prompt)
+        translator = tr.load(entry, prompt, self.pyconfig.translate.device)
         on_gpu = translator.device == "cuda"
         self.emit(ModelLoaded("translator", entry.id, translator.device, entry.size_bytes if on_gpu else 0,
                               0 if on_gpu else entry.size_bytes, time.perf_counter() - began))

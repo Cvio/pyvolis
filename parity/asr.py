@@ -87,6 +87,9 @@ class Rust:
         config.mode.kind = "continuous"
         config.audio.input_device = CABLE_OUT
         config.tts.enabled = False
+        if not (REPO / "models" / "asr" / config.asr.engine / "engine.toml").is_file():
+            # The user's recognizer is one only pyvolis runs; Rust gets one it has.
+            config.asr.engine = "parakeet-tdt-0.6b-v3-int8"
         config.save_selections(WORK / "volis.toml")
         self.selected = config.asr.engine
         env = dict(os.environ, RUST_LOG="info", NO_COLOR="1")
@@ -169,15 +172,21 @@ class Rust:
 
 def play(clip: np.ndarray, device: int, rate: int = 16_000) -> None:
     """Play a 16 kHz clip into the cable at the cable's rate, then 1.5 s of silence."""
-    import sounddevice as sd
+    from pyvolis import audio
 
     if rate != 16_000:
         import soxr
 
         clip = soxr.resample(clip, 16_000, rate).astype(np.float32)
     silence = np.zeros(int(rate * 1.5), np.float32)
-    sd.play(np.concatenate([clip, silence]), samplerate=rate, device=device)
-    sd.wait()
+    sound = np.concatenate([clip, silence])
+
+    def run() -> None:  # every PortAudio call goes through the audio thread
+        sd = audio._sd()
+        sd.play(sound, samplerate=rate, device=device)
+        sd.wait()
+
+    audio.on_audio_thread(run)
 
 
 def read_rust_wav(path: Path) -> np.ndarray:

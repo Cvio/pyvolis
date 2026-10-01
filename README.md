@@ -164,7 +164,8 @@ hold_ms = 1500
 
 [translate]
 model = ""          # as --report lists it; "" = the .gguf at the top of models\mt\
-prompt = "default"  # a file in prompts\
+prompt = "default"  # a file in prompts\; "rust" = exactly what Rust volis sends
+device = "auto"     # "auto" = the GPU if the GPU build is installed, "cpu", or "cuda"
 ```
 
 ```powershell
@@ -182,6 +183,15 @@ prompt = "default"  # a file in prompts\
 llama-cpp-python is compiled here, once, by `.\build-llama.ps1` (needs Visual Studio Build
 Tools), and the wheel is kept in `wheels\`, so `setup.ps1` needs no compiler. It is a CPU
 build, as Rust volis's translator is.
+
+For translation on the GPU (several times faster), build the GPU wheel on the machine:
+install NVIDIA's CUDA Toolkit 12.8 or 12.9 (not 13; Custom install, driver components
+unticked), then `.\build-llama.ps1 -Cuda` and `.\setup.ps1`. The wheel goes in `wheels\cuda\`
+(344 MB, not committed), and running it needs no toolkit: it uses the CUDA files PyTorch ships.
+`.\doctor.ps1` then reports "GPU offload: yes".
+
+`scripts\obey_check.py` measures whether a translator and prompt translate questions and
+requests or answer them.
 
 ## Checking against Rust volis
 

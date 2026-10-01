@@ -272,6 +272,11 @@ class HfAsr:
         if self.model_type in _ctc_types():
             self._select_adapter(varieties.language_of(language))
 
+    def warm_up(self, language: str) -> None:
+        """One pass over a second of silence: the first pass on a GPU sets
+        things up and takes several times as long as the ones after it."""
+        self.transcribe(np.zeros(16_000, dtype=np.float32), language, False)
+
     def memory(self) -> Memory:
         return Memory(gpu_bytes=self._bytes if self.device == "cuda" else 0,
                       cpu_bytes=self._bytes if self.device == "cpu" else 0, device=self.device)

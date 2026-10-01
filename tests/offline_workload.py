@@ -15,6 +15,10 @@ from pyvolis import paths  # noqa: E402
 root = paths.app_root()
 paths.apply_offline_environment(root)
 
+from pyvolis.translate.llamacpp import load_cuda_runtime  # noqa: E402
+
+load_cuda_runtime()  # a GPU build of llama.cpp needs it before the import
+
 import av  # noqa: E402, F401
 import huggingface_hub  # noqa: E402, F401
 import llama_cpp  # noqa: E402, F401

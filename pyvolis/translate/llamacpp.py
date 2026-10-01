@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import logging
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -33,28 +34,88 @@ THREADS = 6  # Rust's THREADS: best on the laptop's 6 performance cores
 EMPTY_THINK = "<think>\n\n</think>\n\n"
 
 
+CUDA_RUNTIME = ("cudart64_12.dll", "cublasLt64_12.dll", "cublas64_12.dll")
+
+
+def load_cuda_runtime() -> None:
+    """A GPU build of llama.cpp needs NVIDIA's CUDA 12 runtime files, and
+    PyTorch ships them (torch\\lib). Load those, by full path, before
+    llama_cpp is imported: no second copy, no CUDA Toolkit on the machine,
+    and nothing looked for outside the app. Does nothing for a CPU build."""
+    import ctypes
+    import importlib.util
+
+    llama = importlib.util.find_spec("llama_cpp")
+    torch = importlib.util.find_spec("torch")
+    if not llama or not torch or not llama.origin or not torch.origin:
+        return
+    if not (Path(llama.origin).parent / "lib" / "ggml-cuda.dll").is_file():
+        return
+    folder = Path(torch.origin).parent / "lib"
+    for name in CUDA_RUNTIME:
+        try:
+            ctypes.WinDLL(str(folder / name))
+        except OSError as e:
+            raise TranslateError(f"cannot load {(folder / name).absolute()}, which the GPU build of the "
+                                 f"translator needs: {e}") from e
+
+
+def gpu_available() -> bool:
+    """Is this a GPU build of llama.cpp, on a machine with a GPU it can use?"""
+    load_cuda_runtime()
+    import llama_cpp
+
+    if not llama_cpp.llama_supports_gpu_offload():
+        return False
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
 class LlamaTranslator:
-    def __init__(self, entry: TranslatorEntry, prompt: PromptFile, gpu_layers: int = 0) -> None:
+    def __init__(self, entry: TranslatorEntry, prompt: PromptFile, device: str = "auto") -> None:
+        """`device`: "cpu" (as Rust volis), "cuda", or "auto" = the GPU when
+        this build and this machine have one, else the CPU."""
+        load_cuda_runtime()
         import llama_cpp
 
         self.name = entry.id
         self.entry = entry
         self.prompt_file = prompt
-        self.device = "cuda" if gpu_layers and llama_cpp.llama_supports_gpu_offload() else "cpu"
+        if device == "cuda" and not gpu_available():
+            raise TranslateError(
+                '[translate] device = "cuda", but the translator can\'t use a GPU here: this needs the GPU '
+                "build of llama-cpp-python (build-llama.ps1 -Cuda) and an NVIDIA GPU")
+        self.device = "cuda" if device == "cuda" or (device == "auto" and gpu_available()) else "cpu"
         began = time.perf_counter()
-        try:
-            self._llama = llama_cpp.Llama(
+
+        def open_model(on_gpu: bool):
+            return llama_cpp.Llama(
                 model_path=str(entry.path),
                 n_ctx=CONTEXT_TOKENS,
                 n_batch=CONTEXT_TOKENS,
                 n_threads=THREADS,
                 n_threads_batch=THREADS,
-                n_gpu_layers=gpu_layers if self.device == "cuda" else 0,
+                n_gpu_layers=-1 if on_gpu else 0,  # every layer, or none
                 # llama.cpp defaults to "auto", which is on for the CPU and is what
                 # Rust's llama-cpp-2 gets; llama-cpp-python would turn it off.
                 flash_attn=True,
                 verbose=False,
             )
+
+        try:
+            try:
+                self._llama = open_model(self.device == "cuda")
+            except Exception as e:
+                if device != "auto" or self.device != "cuda":
+                    raise
+                # Typically no room left on the GPU: say so, and use the CPU.
+                log.warning("the translation model didn't load on the GPU (%s); using the CPU", e)
+                self.device = "cpu"
+                self._llama = open_model(False)
         except Exception as e:  # llama_cpp raises ValueError on a bad file
             raise TranslateError(f"cannot load the translation model {entry.path.absolute()}: {e}") from e
         self._template = self._llama.metadata.get("tokenizer.chat_template")
@@ -77,10 +138,11 @@ class LlamaTranslator:
         """The chat template rendered with the system text, any context as
         earlier turns (P7), and the text to translate."""
         messages = [{"role": "system", "content": system_text(self.prompt_file, request)}]
+        user = lambda text: self.prompt_file.user_text(text, request.source, request.target)  # noqa: E731
         for turn in request.context:
-            messages.append({"role": "user", "content": turn.source})
+            messages.append({"role": "user", "content": user(turn.source)})
             messages.append({"role": "assistant", "content": turn.translation})
-        messages.append({"role": "user", "content": request.text.strip()})
+        messages.append({"role": "user", "content": user(request.text)})
         return render(self._template, messages, self._special_tokens(), self.architecture)
 
     def count_tokens(self, text: str) -> int:

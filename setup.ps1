@@ -56,6 +56,15 @@ try {
               "without re-locking; run 'uv lock' on the machine that made the change and commit uv.lock. " +
               "If it failed writing or loading a .dll, see the README's 'Security software' section.")
     }
+    # The GPU build of the translator, when this machine has built one
+    # (build-llama.ps1 -Cuda): too large to commit, so it replaces the CPU wheel here.
+    $cudaWheel = Get-ChildItem (Join-Path $repo "wheels\cuda") -Filter "llama_cpp_python-*.whl" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($cudaWheel) {
+        Write-Host "`n== Installing the GPU build of the translator ($($cudaWheel.Name))"
+        & uv pip install --python (Join-Path $repo ".venv\Scripts\python.exe") --reinstall --no-deps $cudaWheel.FullName
+        if ($LASTEXITCODE -ne 0) { Fail "installing $($cudaWheel.FullName) failed" }
+    }
 }
 finally {
     Pop-Location

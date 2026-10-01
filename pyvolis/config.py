@@ -260,6 +260,9 @@ class PyTranslate:
     model: str = ""
     # A prompt file in prompts/, by name.
     prompt: str = "default"
+    # "auto" = the GPU when the translator's build and the machine have one;
+    # "cpu" = always the CPU, as Rust volis; "cuda" = the GPU or an error.
+    device: str = "auto"
 
 
 @dataclass
