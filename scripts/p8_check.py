@@ -134,7 +134,7 @@ def files(root: Path, asr: str, mt: str) -> None:
         for mode in ("carry", "revision"):
             out = run_file(root, path, source, target, asr, mt, mode)
             text = " ".join(out["translated"].get(s.id, "") for s in out["sentences"])
-            chrf = f"chrF {scoring.chrf(text, reference['translation'], target):.1f}" if reference.get("translation") else ""
+            chrf = f"chrF {scoring.chrf(reference['translation'], text, target):.1f}" if reference.get("translation") else ""
             s = out["stats"]
             print(f"  {name}, {mode:8s}: {len(out['sentences'])} sentences, {len(out['revised'])} revisions "
                   f"in {s['revision_passes']} passes (median {s['revise_ms_median']} ms), translate median "

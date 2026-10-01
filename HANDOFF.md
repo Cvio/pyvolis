@@ -245,6 +245,36 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     the revision pass is skipped. A file run never skips it.
 48. **Paired mode:** revision is to be off while paired (P9), as the build file says.
 
+49. **Translation-only models (TranslateGemma)** have a chat template that takes the two language
+    codes and the text and writes its own instructions. pyvolis detects that template
+    (`source_lang_code` in it) and gives it what it asks for; the prompt file and the glossary
+    are not used with such a model, context still is. A variety its table lacks (en-US) is
+    sent as the bare language.
+
+## Translator comparison (2026-10-01, `scripts/mt_bench.py`)
+
+Text only (FLEURS reference transcripts, 10 sentences a language, FLORES+ references), default
+prompt, carry-forward context, GPU build. chrF; "obey" = of 24 tempting sentences translated
+rather than answered, alone / with context; dialogues = first sentence right at once / after
+revision, of 12.
+
+| translator (Q4_K_M) | GB | es>en | ar>en | fa>en | en>es | mean | obey | dialogues | ms/sentence |
+|---|---|---|---|---|---|---|---|---|---|
+| Qwen3 1.7B (Rust's) | 1.1 | 59.2 | 64.3 | 58.8 | 58.3 | 60.2 | 24 / 24 | 5 / 7 | 261 |
+| Gemma 3 4B | 2.5 | 65.9 | 67.7 | 65.5 | 60.0 | 64.8 | 24 / 24 | 6 / 7 | 444 |
+| TranslateGemma 4B | 2.5 | 64.2 | 66.9 | 65.9 | 60.0 | 64.3 | 23 / 24 | 6 / 10 | 511 |
+| Gemma 4 E4B | 5.0 | 64.3 | 71.3 | 63.8 | 60.9 | 65.1 | 24 / 23 | 6 / 8 | 586 |
+| Qwen3 8B | 5.0 | 64.3 | 67.3 | 62.3 | 59.9 | 63.4 | 24 / 23 | 5 / 6 | 867 |
+| TranslateGemma 12B | 7.3 | 62.3 | 68.4 | 64.9 | 61.2 | 64.2 | 24 / 24 | 6 / 9 | 8040 * |
+| Gemma 3 12B | 7.3 | 63.1 | 70.3 | 66.9 | 60.5 | 65.2 | 24 / 24 | 6 / 7 | 9313 * |
+| Gemma 4 12B | 7.1 | 62.2 | 73.1 | 66.6 | 62.7 | 66.1 | 24 / 24 | 5 / 8 | 5909 * |
+
+\* doesn't fit this laptop's 8 GB card and spilled into ordinary memory; not what a larger GPU
+would give. Ten sentences a language: a point or two of chrF is noise. What holds: every model
+from 4B up is 3 to 6 chrF above Qwen3 1.7B; the 12B models are not clearly better than the 4B
+ones except on Arabic (Gemma 4 12B 73.1, Gemma 4 E4B 71.3, against 67 to 68); TranslateGemma
+is the one revision helps most. llama-cpp-python 0.3.35 loads the `gemma4` architecture.
+
 ## P8 findings
 
 - `scripts/p8_check.py`, 12 two-sentence dialogues where the first sentence needs the second

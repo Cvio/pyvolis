@@ -137,12 +137,35 @@ class LlamaTranslator:
     def prompt(self, request: TranslationRequest) -> str:
         """The chat template rendered with the system text, any context as
         earlier turns (P7), and the text to translate."""
+        if "source_lang_code" in self._template:
+            return self._translation_model_prompt(request)
         messages = [{"role": "system", "content": system_text(self.prompt_file, request)}]
         user = lambda text: self.prompt_file.user_text(text, request.source, request.target)  # noqa: E731
         for turn in request.context:
             messages.append({"role": "user", "content": user(turn.source)})
             messages.append({"role": "assistant", "content": turn.translation})
         messages.append({"role": "user", "content": user(request.text)})
+        return render(self._template, messages, self._special_tokens(), self.architecture)
+
+    def _translation_model_prompt(self, request: TranslationRequest) -> str:
+        """For a model trained only to translate (TranslateGemma): its
+        template takes the two language codes and the text and writes the
+        instructions itself, the ones the model was trained with. The prompt
+        file and the glossary are not used; context still goes in as earlier
+        turns."""
+
+        def code(tag: str) -> str:  # a code the template's own table has
+            return tag if f'"{tag}"' in self._template else tag.split("-")[0]
+
+        def user(text: str) -> dict:
+            return {"role": "user", "content": [{"type": "text", "source_lang_code": code(request.source),
+                                                 "target_lang_code": code(request.target), "text": text.strip()}]}
+
+        messages = []
+        for turn in request.context:
+            messages.append(user(turn.source))
+            messages.append({"role": "assistant", "content": turn.translation})
+        messages.append(user(request.text))
         return render(self._template, messages, self._special_tokens(), self.architecture)
 
     def count_tokens(self, text: str) -> int:
