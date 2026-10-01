@@ -142,7 +142,8 @@ def scores(reference: scoring.Reference, run_out, source: str, target: str) -> s
     lines = [f"scores against {reference.source.name} (quick check, model-bench's cleaning):"]
     if reference.transcript is not None:
         hyp = " ".join(s.text for s in sentences)
-        lines.append(f"  transcript CER {scoring.cer(reference.transcript, hyp, source):.1f}%")
+        lines.append(f"  transcript CER {scoring.cer(reference.transcript, hyp, source):.1f}%, "
+                     f"WER {scoring.wer(reference.transcript, hyp, source):.1f}%")
     if reference.translation is not None:
         hyp = " ".join(translations.get(s.id, "") for s in sentences)
         lines.append(f"  translation chrF {scoring.chrf(reference.translation, hyp, target):.1f}")

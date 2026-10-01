@@ -55,6 +55,8 @@ def test_scores_use_model_benchs_cleaning():
     assert scoring.cer("إلى المدرسة", "الى المدرسة", "ar") == 0.0  # alef forms unified
     assert scoring.cer("می‌روم", "می روم", "fa") == 0.0  # the half-space is a space
     assert scoring.chrf("The cat sat on the mat.", "the cat sat on the mat", "en") == 100.0
+    assert scoring.wer("The cat sat on the mat.", "the cat sat on a mat", "en") == 100.0 / 6
+    assert scoring.wer("Yo manejo.", "", "es") == 100.0
 
 
 def test_a_reference_is_found_beside_the_file(tmp_path):
@@ -121,7 +123,7 @@ def test_a_fixture_file_runs_end_to_end(tmp_path):
     assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
     for name in ("transcript.txt", "translation.txt", "source.srt", "translation.srt", "events.jsonl"):
         assert (out / name).is_file() and (out / name).stat().st_size > 0, name
-    assert "transcript CER" in done.stdout and "translation chrF" in done.stdout
+    assert "transcript CER" in done.stdout and "WER" in done.stdout and "translation chrF" in done.stdout
     first = json.loads((out / "events.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert first["t"] == "Configuration" and first["settings"]["recognizer"]["files"]
     assert len((out / "transcript.txt").read_text(encoding="utf-8").splitlines()) >= 3

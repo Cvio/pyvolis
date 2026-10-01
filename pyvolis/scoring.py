@@ -81,6 +81,16 @@ def cer(reference: str, hypothesis: str, language: str) -> float:
     return 100.0 * edit_distance(r, h) / max(len(r), 1)
 
 
+def wer(reference: str, hypothesis: str, language: str) -> float:
+    """Word error rate in percent, after the same cleaning. A pyvolis
+    addition: model-bench reports CER only. Harsh for Arabic and Persian,
+    where one wrong letter in a word carrying attached prefixes is a whole
+    wrong word; read it beside CER there."""
+    r = clean(reference, language).split()
+    h = clean(hypothesis, language).split()
+    return 100.0 * edit_distance(r, h) / max(len(r), 1)
+
+
 def chrf(reference: str, hypothesis: str, language: str) -> float:
     from sacrebleu.metrics.chrf import CHRF
 

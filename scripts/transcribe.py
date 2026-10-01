@@ -1,12 +1,13 @@
 """Transcribe the FLEURS fixtures with every recognizer that covers their
 language, through the same guards the pipeline uses, and print per model:
-character error rate against the reference, how often the output has no
+character and word error rates against the reference, how often the output has no
 punctuation at all (whether it can mark questions), and the real-time factor.
 
     .venv\\Scripts\\python.exe scripts\\transcribe.py [es_419 ar_eg fa_ir en_us] [--model NAME] [--show]
 
-GPU models are loaded one at a time and released after. The CER here is a
-quick look: case, punctuation and spacing ignored. model-bench is the proof.
+GPU models are loaded one at a time and released after. Scores use
+model-bench's cleaning (pyvolis/textclean.py), over the whole set. A quick
+look; model-bench is the proof.
 """
 
 from __future__ import annotations
@@ -27,24 +28,12 @@ for stream in (sys.stdout, sys.stderr):
     stream.reconfigure(encoding="utf-8", errors="replace")
 
 from pyvolis import asr, models  # noqa: E402
-from pyvolis.asr.guards import Guards, SpeechScorer, load_phrases, normalise  # noqa: E402
+from pyvolis.asr.guards import Guards, SpeechScorer, load_phrases  # noqa: E402
+from pyvolis.scoring import cer as score_cer, wer as score_wer  # noqa: E402
 from pyvolis.filesource import read_16k_mono  # noqa: E402
 
 LANG = {"es_419": "es", "ar_eg": "ar", "fa_ir": "fa", "en_us": "en"}
 PUNCTUATION = set(".,;:!?¿¡،؛؟…\"'«»()-")
-
-
-def cer(ref: str, hyp: str) -> float:
-    r, h = normalise(ref).replace(" ", ""), normalise(hyp).replace(" ", "")
-    if not r:
-        return 0.0 if not h else 1.0
-    prev = list(range(len(h) + 1))
-    for i, rc in enumerate(r, 1):
-        cur = [i] + [0] * len(h)
-        for j, hc in enumerate(h, 1):
-            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (rc != hc))
-        prev = cur
-    return prev[-1] / len(r)
 
 
 def main() -> int:
@@ -74,7 +63,7 @@ def main() -> int:
             except asr.AsrError as e:
                 print(f"{name} {engine.dir_name}: cannot load: {e}")
                 continue
-            errors, bare, spent, heard, dropped = [], 0, 0.0, 0.0, 0
+            refs_all, hyps_all, bare, spent, heard, dropped = [], [], 0, 0.0, 0.0, 0
             for audio, ref in clips:
                 began = time.perf_counter()
                 result = recognizer.transcribe(audio, language)
@@ -82,15 +71,18 @@ def main() -> int:
                 heard += len(audio) / 16000
                 verdict = guards.check(result.text, language, audio)
                 dropped += verdict.dropped
-                errors.append(cer(ref, verdict.text))
+                refs_all.append(ref)
+                hyps_all.append(verdict.text)
                 bare += not any(c in PUNCTUATION for c in verdict.text)
                 if args.show:
                     print(f"  [{engine.dir_name}] {verdict.text}")
             recognizer.close()
-            rows.append((name, engine.dir_name, engine.backend, sum(errors) / len(errors),
-                         bare / len(clips), spent / heard, dropped))
-            print(f"{name:7s} {engine.dir_name:44s} CER {rows[-1][3]:6.1%}  no punctuation "
-                  f"{rows[-1][4]:5.0%}  RTF {rows[-1][5]:.2f}  guard drops {dropped}", flush=True)
+            # Over the whole set at once, as model-bench sums its counts.
+            joined_ref, joined_hyp = " ".join(refs_all), " ".join(hyps_all)
+            c, w = score_cer(joined_ref, joined_hyp, language), score_wer(joined_ref, joined_hyp, language)
+            rows.append((name, engine.dir_name, c, w))
+            print(f"{name:7s} {engine.dir_name:44s} CER {c:5.1f}%  WER {w:5.1f}%  no punctuation "
+                  f"{bare / len(clips):5.0%}  RTF {spent / heard:.2f}  guard drops {dropped}", flush=True)
     return 0
 
 
