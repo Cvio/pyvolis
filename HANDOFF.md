@@ -25,7 +25,7 @@ Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   (`sentences.py`), a translation thread, the events (`events.py`), the export folder
   (`export.py`) and quick scores (`scoring.py`, with model-bench's `textclean.py` copied
   verbatim). `scripts/make_fixture_file.py` builds test recordings with references.
-- **P5 done; the user ran its check on 2026-10-01** (a Spanish file, an Arabic file, a live
+- **P5 done; the user ran its check on 2026-09-30** (a Spanish file, an Arabic file, a live
   conversation in the window: all three looked right). The window (`gui/window.py`,
   drawing `gui/session.py`), voice output (`tts.py`, `playback.py`, the half-duplex gate), and
   `--report --load`. Checked without a person: `scripts/window_check.py` (the window through a
