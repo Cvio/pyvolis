@@ -9,6 +9,7 @@ pairing and the shared machine join at P6, P9 and P10.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from .. import events as ev
@@ -45,6 +46,7 @@ class Row:
     first_audio_ms: int | None = None
     spoken: bool = False  # reached the sound card (P8: never revised after)
     revised: bool = False
+    revised_at: float = 0.0  # time.monotonic() of the last revision, for the brief highlight
     history: list[str] = field(default_factory=list)  # earlier translations (P8)
     approximate: bool = False  # times shared out by length
     held: bool = False  # a fragment waiting to be joined to what follows
@@ -237,7 +239,7 @@ class Session:
         elif isinstance(event, ev.Revised):
             if (row := self.row(event.id)) is not None:
                 row.history.append(event.old)
-                row.target, row.revised = event.new, True
+                row.target, row.revised, row.revised_at = event.new, True, time.monotonic()
         elif isinstance(event, ev.NothingRecognized):
             self._end_provisional(event.index)
             self._push(Nothing(event.index, event.speech_ms, event.start))

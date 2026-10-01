@@ -4,7 +4,7 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P7 of `pyvolis-build.md`. pyvolis has its window: live translation from the
+Status: milestone P8 of `pyvolis-build.md`. pyvolis has its window: live translation from the
 microphone, taking turns or listening continuously, with voice output; file mode with a
 timeline and export; text shown while you speak, and translation that knows what was said
 before. Pairing and the shared machine arrive at P9 and P10.
@@ -98,6 +98,12 @@ Three checkboxes change how it works:
   may change. It roughly doubles the recognition work.
 - **Translate with the earlier sentences as context:** each sentence is translated knowing the
   last four and their translations, so "her", "it" and the like come out right.
+- **Revise earlier translations when what follows changes them:** after each sentence the last
+  three are translated again together, and a short earlier sentence whose translation changes
+  is replaced ("He fell." becomes "It fell." once "The system isn't responding" is heard). The
+  row is highlighted briefly, marked "revised", and keeps the earlier wording in its tooltip.
+  A sentence that has been spoken aloud is never revised, so this is for captions and files,
+  with "Speak translations" off. It costs one more translation per sentence.
 - **Join short fragments to what follows:** a few words with no full stop wait up to 1.5 s
   for the rest before they are translated.
 
@@ -116,7 +122,7 @@ WAV, MP3, M4A, FLAC, OGG and Opus open as they are. The file goes through the sa
 the microphone. `--asr <folder>` and `--mt <id>` pick the models (as `--report` lists them),
 `--fast` runs as fast as the models allow (otherwise at playing speed), and `--export <dir>`
 says where to write; the default is `exports\<file>-<date>\`. `--streaming` /
-`--no-streaming`, `--context off|carry`, `--no-hold` and `--glossary "Name, Term"` override
+`--no-streaming`, `--context off|carry|revision`, `--no-hold` and `--glossary "Name, Term"` override
 the settings for one run. The export holds:
 
 | File | What it holds |
@@ -153,9 +159,13 @@ streaming = false   # show text while speaking (continuous and file mode)
 interval_s = 1.0    # how often the growing utterance is transcribed
 
 [context]
-mode = "carry"      # "off" = each sentence alone, as Rust volis does
+mode = "carry"      # "off" = each sentence alone, as Rust volis does; "revision" = carry,
+                    # and earlier translations are replaced when later sentences change them
 sentences = 4       # how many earlier sentences, at most
 token_budget = 400  # and never more than this many tokens of them
+revise_sentences = 3     # revision: how many are translated again together
+revise_max_age_s = 30.0  # revision: never a sentence that ended longer ago than this
+revise_max_words = 8     # revision: nor one longer than this
 
 [fragments]
 hold = true         # join a short fragment to what follows

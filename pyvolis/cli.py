@@ -53,7 +53,8 @@ OPTIONS FOR --file (and --from, --to, --mt, --prompt as above):
     --no-translate      Transcribe only
     --streaming         Recognise while the speech goes on (provisional text,
                         committed as two passes agree); --no-streaming forces it off
-    --context <MODE>    "carry" (earlier sentences as context) or "off"
+    --context <MODE>    "carry" (earlier sentences as context), "revision"
+                        (carry, and earlier translations may be replaced) or "off"
     --no-hold           Don't hold short fragments to join them to what follows
     --glossary <TERMS>  Names and terms to keep exactly, separated by commas
 
@@ -155,8 +156,8 @@ def parse(args: list[str]) -> Command:
             if value is None:
                 raise UsageError(f"{arg} needs a value")
             values[arg] = value
-        if values["--context"] not in ("", "off", "carry"):
-            raise UsageError(f'--context "{values["--context"]}" is not "off" or "carry"')
+        if values["--context"] not in ("", "off", "carry", "revision"):
+            raise UsageError(f'--context "{values["--context"]}" is not "off", "carry" or "revision"')
         streaming = True if flags["--streaming"] else False if flags["--no-streaming"] else None
         return Command("file", path=rest[0], source=values["--from"], target=values["--to"], mt=values["--mt"],
                        prompt=values["--prompt"], asr=values["--asr"], export=values["--export"],

@@ -43,7 +43,10 @@ Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   and requests are translated instead of answered (differences 41, 42); the translator runs on
   the GPU when a GPU build is installed (43); GPU recognizers make a warm-up pass at load.
   Numbers under "After P7".
-- Next: P8 (revision mode). Wait for the go-ahead.
+- **P8 done:** revision mode (`translate/revision.py`, `[context] mode = "revision"`, the
+  window's "Revise earlier translations" box, `--context revision`), with its limits. Checked
+  by `scripts/p8_check.py`; numbers under "P8 findings".
+- Next: P9 (paired mode, including with Rust volis). Wait for the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -215,6 +218,62 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     copy of each in the process and no CUDA Toolkit is needed to run. `device = "cpu"` is Rust's
     behaviour. On the GPU the wording differs from the CPU's on most sentences, at the same
     quality.
+44. **Revision mode** (Rust has none). After each translated sentence, the last 3 source
+    sentences are translated again as one text (the conversation before them as context), the
+    result is split back into sentences, and an earlier sentence whose translation changed gets
+    a `Revised` event: the row shows the new wording, is highlighted for 4 s, says "revised" and
+    keeps the old wording in its tooltip; `events.jsonl` logs old and new; the status line
+    counts them. Off by default (`mode = "carry"`).
+45. **What revision never touches,** beyond the build file's two rules (a sentence handed to
+    the voice; one that ended more than 30 s before the newest). These three are mine, each
+    from a measurement:
+    - *a sentence of more than 8 words* (`revise_max_words`): revising everything on the
+      read-speech fixture gave 20 revisions in 14 sentences and a worse translation (Gemma,
+      chrF 61.2 against 63.6). Long sentences carry their own meaning; a second translation
+      only rewords them. If no earlier sentence in reach is short, the translator isn't asked;
+    - *the newest sentence*: nothing has been said since it was translated;
+    - *a sentence already revised once*: second looks flipped "doesn't" to "does not" and back.
+    Also: if the joint translation doesn't split into as many sentences as the source, nothing
+    changes (there is no telling which words belong to which sentence); and a difference of
+    case or punctuation alone is not a revision.
+46. **"Spoken" means handed to the voice,** not finished playing: once queued it will be said.
+    So with "Speak translations" on, every sentence is spoken as soon as it is translated and
+    revision changes nothing; the translator is not asked again at all. Revision is for
+    captions and file runs. (An idea, not built: within a turn, hold each sentence's speech
+    until the next sentence has been translated.)
+47. **Live, revision gives way to new speech:** when sentences are waiting to be translated,
+    the revision pass is skipped. A file run never skips it.
+48. **Paired mode:** revision is to be off while paired (P9), as the build file says.
+
+## P8 findings
+
+- `scripts/p8_check.py`, 12 two-sentence dialogues where the first sentence needs the second
+  ("Yo manejo. / Mi carro está afuera.", "Se cayó. / El sistema no responde desde las nueve.",
+  "It's cold. / The soup has been sitting out for an hour."):
+
+  | | right at once | fixed by revision | still wrong | made worse |
+  |---|---|---|---|---|
+  | Qwen3 1.7B | 5 | 2 ("I manage." -> "I drive."; "He fell." -> "It fell.") | 5 | 0 |
+  | Gemma 3 4B | 6 | 1 ("Pareces cansado/a." -> "Están cansados.") | 5 | 0 |
+
+  So revision fixes a minority of what carry-forward gets wrong. The models mostly translate
+  the joint text left to right and repeat their first reading ("Es muy rico." stays "It is very
+  rich" / "It's very delicious" beside "My uncle has three houses and a yacht").
+- Other ways of showing the model the following sentence were tried and are not kept: the
+  sentence alone with "the speaker went on to say ..." after it, before it, or in the system
+  text. None beat the joint translation (both translators end at 7 of 12 right either way),
+  and two of them made Qwen recite the note.
+- Through the pipeline, on `dialogue-es.wav` (the Spanish dialogues spoken by a Piper voice,
+  `scripts/make_dialogue_file.py`; 14 sentences, 42 s): Qwen3 5 revisions in 13 passes (3
+  better, 1 a contraction, 1 worse: "It is closed." -> "He is closed."); Gemma 9 revisions
+  (about half better: "I saw her." -> "I saw it.", "It fell." -> "It crashed.", "I can't find
+  it." -> "I can't find him."; one clearly worse: "It's ready." -> "She is ready."). A revision
+  pass takes about 0.5 s (Qwen3) to 0.8 s (Gemma) on the GPU, once per sentence.
+- On the read-speech fixture: 0 revisions, 2 passes, chrF unchanged (Qwen3 56.8 both ways;
+  Gemma 61.6 and 61.4, the 0.2 being run-to-run variation on the GPU, not revisions).
+- With the voice on: 14 sentences spoken, 0 revisions. With the age limit at 0 s: 0 revisions.
+- The count is the thing to watch, as the build file says: Gemma's 9 in 14 short sentences is
+  a lot of rewriting for roughly 4 real improvements.
 
 ## After P7: answering instead of translating, and the GPU translator
 

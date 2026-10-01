@@ -58,9 +58,9 @@ class History:
                 self._turns.popleft()
 
     def replace_last(self, translations: list[str]) -> None:
-        """P8: the last sentences were re-translated; keep the new wording."""
-        turns = list(self._turns)
-        for turn, new in zip(turns[-len(translations):], translations):
+        """P8: the last sentences were re-translated; keep the new wording.
+        Aligned from the end: the history may hold fewer turns than that."""
+        for turn, new in zip(reversed(self._turns), reversed(translations)):
             turn.translation = new
 
     def context(self, count_tokens) -> list[Turn]:

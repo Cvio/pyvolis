@@ -19,6 +19,7 @@ import logging
 from html import escape
 import queue
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +49,8 @@ COLUMNS = ["Time", "Source", "Translation", "Notes"]
 MUTED = QColor(130, 130, 130)
 PROBLEM = QColor(190, 60, 40)
 REVISED = QColor(255, 244, 200)
+REVISED_TEXT = QColor(20, 20, 20)  # readable on the highlight in a dark theme too
+REVISED_SECONDS = 4.0  # how long a replaced translation stays highlighted
 
 
 class DirectionDelegate(QStyledItemDelegate):
@@ -227,6 +230,12 @@ class MainWindow(QMainWindow):
         self.streaming.setToolTip("Transcribes the growing utterance every second; words two passes agree on are "
                                   "committed, the rest is shown lighter and may change. Costs more recognition.")
         self.use_context = QCheckBox("Translate with the earlier sentences as context")
+        self.revise = QCheckBox("Revise earlier translations when what follows changes them")
+        self.revise.setToolTip("After each sentence the last few are translated again together; a short earlier "
+                               "sentence whose translation changes is replaced, and the row says so. A sentence "
+                               "that has been spoken aloud is never revised, so with Speak translations on this "
+                               "changes nothing. Costs one more translation per sentence.")
+        self.use_context.toggled.connect(lambda on: self.revise.setEnabled(on and not self.running()))
         self.hold_fragments = QCheckBox("Join short fragments to what follows")
         self.glossary = QLineEdit()
         self.glossary.setPlaceholderText("Names and terms to keep exactly, separated by commas")
@@ -260,6 +269,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.compare)
         form.addRow(self.streaming)
         form.addRow(self.use_context)
+        form.addRow(self.revise)
         form.addRow(self.hold_fragments)
         form.addRow("Glossary", self.glossary)
         self.memory = QLabel()
@@ -272,8 +282,9 @@ class MainWindow(QMainWindow):
         # The mode, unlike every other setting, can change while running.
         self.locked_while_running = [self.source_lang, self.target_lang, self.recognizer, self.translator,
                                      self.input_device, self.output_device, self.speak, self.half_duplex,
-                                     self.compare, self.streaming, self.use_context, self.hold_fragments]
-        for widget in (self.streaming, self.use_context, self.hold_fragments):
+                                     self.compare, self.streaming, self.use_context, self.revise,
+                                     self.hold_fragments]
+        for widget in (self.streaming, self.use_context, self.revise, self.hold_fragments):
             widget.toggled.connect(self.save)
         for widget in (self.mode_turn, self.mode_continuous, self.style_toggle, self.style_hold):
             widget.toggled.connect(self.mode_controls_changed)
@@ -365,7 +376,8 @@ class MainWindow(QMainWindow):
         self.speak.setChecked(self.config.tts.enabled)
         self.half_duplex.setChecked(self.config.tts.half_duplex)
         self.streaming.setChecked(self.pyconfig.asr.streaming)
-        self.use_context.setChecked(self.pyconfig.context.mode == "carry")
+        self.use_context.setChecked(self.pyconfig.context.mode in ("carry", "revision"))
+        self.revise.setChecked(self.pyconfig.context.mode == "revision")
         self.hold_fragments.setChecked(self.pyconfig.fragments.hold)
         (self.mode_continuous if self.config.mode.kind == CONTINUOUS else self.mode_turn).setChecked(True)
         (self.style_hold if self.config.mode.turn_style == "hold" else self.style_toggle).setChecked(True)
@@ -454,6 +466,12 @@ class MainWindow(QMainWindow):
         self._filling = False
         self.refresh()
 
+    def context_mode(self) -> str:
+        """[context].mode as the two boxes say: revision builds on context."""
+        if not self.use_context.isChecked():
+            return "off"
+        return "revision" if self.revise.isChecked() else "carry"
+
     def save(self) -> None:
         """Keep the selections, as Rust does: volis.toml for what Rust shares,
         pyvolis.toml for the translator."""
@@ -472,7 +490,7 @@ class MainWindow(QMainWindow):
         c.tts.half_duplex = self.half_duplex.isChecked()
         self.pyconfig.translate.model = self.translator.currentData() or ""
         self.pyconfig.asr.streaming = self.streaming.isChecked()
-        self.pyconfig.context.mode = "carry" if self.use_context.isChecked() else "off"
+        self.pyconfig.context.mode = self.context_mode()
         self.pyconfig.fragments.hold = self.hold_fragments.isChecked()
         try:
             c.save_selections(paths.config_file(self.root))
@@ -669,6 +687,7 @@ class MainWindow(QMainWindow):
         self.pause_button.setText("Resume" if self.paused else "Pause")
         for widget in self.locked_while_running:
             widget.setEnabled(not running)
+        self.revise.setEnabled(not running and self.use_context.isChecked())  # revision builds on context
         self.mode_box.setEnabled(not file_mode)
         self.style_box.setEnabled(self.mode_turn.isChecked())
         for widget in (self.open_button, self.realtime, self.fast, self.play_original, self.source_live, self.source_file):
@@ -790,8 +809,13 @@ class MainWindow(QMainWindow):
             if line.problem and not line.target:
                 self.table.item(index, 2).setForeground(QBrush(PROBLEM))
             if line.revised:
-                self.table.item(index, 2).setBackground(QBrush(REVISED))
-                self.table.item(index, 2).setToolTip("Earlier: " + " | ".join(line.history))
+                # Highlighted briefly; the note and the earlier wording (tooltip) stay.
+                item = self.table.item(index, 2)
+                fresh = time.monotonic() - line.revised_at < REVISED_SECONDS
+                item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(REVISED) if fresh else None)
+                if fresh:
+                    item.setForeground(QBrush(REVISED_TEXT))
+                item.setToolTip("Earlier: " + " | ".join(line.history))
         elif line.kind == "nothing":
             self._set(index, [ses.clock(line.start), f"(speech with no words, {line.speech_ms} ms)", "", ""], muted=True)
         elif line.kind == "dropped":

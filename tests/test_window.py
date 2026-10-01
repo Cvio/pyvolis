@@ -140,3 +140,27 @@ def test_the_glossary_reaches_a_running_pipeline(window):
     window.glossary_changed()
     window.pipeline = None
     assert got == [["Susie Wolff", "Bellas Artes"]]
+
+
+def test_a_revision_is_highlighted_only_briefly(window):
+    from PySide6.QtCore import Qt
+
+    feed(window, ev.SentenceMsg("1.1", 1, "Yo manejo.", "es", 0.0, 1.0),
+         ev.Translated("1.1", "I manage.", "en", 300, "cpu", "qwen"), ev.Revised("1.1", "I manage.", "I'll drive."))
+    item = window.table.item(0, 2)
+    assert item.text() == "I'll drive." and item.data(Qt.ItemDataRole.BackgroundRole) is not None
+    window.session.row("1.1").revised_at -= 60  # a minute later
+    window.refresh()
+    assert window.table.item(0, 2).data(Qt.ItemDataRole.BackgroundRole) is None
+    assert "revised" in cells(window, 0)[3] and "I manage." in window.table.item(0, 2).toolTip()
+
+
+def test_the_revise_box_builds_on_context(window):
+    window.use_context.setChecked(True)
+    window.revise.setChecked(True)
+    assert window.context_mode() == "revision"
+    window.use_context.setChecked(False)
+    assert not window.revise.isEnabled() and window.context_mode() == "off"
+    window.use_context.setChecked(True)
+    window.revise.setChecked(False)
+    assert window.revise.isEnabled() and window.context_mode() == "carry"

@@ -102,7 +102,7 @@ class Shared:
 ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("mode", "kind"): ("continuous", "turn", "shared"),
     ("mode", "turn_style"): ("toggle", "hold"),
-    ("context", "mode"): ("off", "carry"),  # pyvolis.toml
+    ("context", "mode"): ("off", "carry", "revision"),  # pyvolis.toml
 }
 
 
@@ -238,10 +238,15 @@ class PyAsr:
 @dataclass
 class PyContext:
     # "carry": translate each sentence with the earlier ones as context.
-    # "off": each sentence alone. ("revision" arrives at P8.)
+    # "off": each sentence alone. "revision": carry, and after each sentence
+    # the last few are translated again together; an earlier translation that
+    # changes is replaced.
     mode: str = "carry"
     sentences: int = 4  # how many earlier sentences, at most
     token_budget: int = 400  # and never more than this many tokens of them
+    revise_sentences: int = 3  # revision: how many are translated again together
+    revise_max_age_s: float = 30.0  # revision: never a sentence older than this
+    revise_max_words: int = 8  # revision: nor one longer than this (it only gets reworded)
 
 
 @dataclass

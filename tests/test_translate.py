@@ -325,6 +325,18 @@ def test_with_rusts_prompt_file_and_no_context_the_prompt_is_rusts(qwen):
         qwen.prompt_file = ours
 
 
+def test_revision_asks_the_real_translator_once_and_only_touches_the_earlier_sentence(qwen):
+    from pyvolis.translate.revision import Done, Reviser
+
+    reviser = Reviser(sentences=3)
+    reviser.add(Done("1.1", "Yo manejo.", "es", "I manage.", 1.0, False))
+    reviser.add(Done("2.1", "Mi carro está afuera.", "es", "My car is outside.", 3.0, False))
+    changes = reviser.revise(qwen, [], "en", [])
+    assert reviser.passes == 1
+    assert [c.id for c in changes] in ([], ["1.1"]), "the newest sentence is never revised"
+    assert all(c.new and c.old == "I manage." for c in changes)
+
+
 def test_the_glossary_is_one_line_of_the_system_text(qwen):
     request = tr.TranslationRequest("Vamos a Bellas Artes.", "es", "en", glossary=["Bellas Artes", "Susie Wolff"])
     prompt = qwen.prompt(request)

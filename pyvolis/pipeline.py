@@ -49,11 +49,12 @@ from .audio import SAMPLE_RATE
 from .config import Config, PyvolisConfig
 from .asr.streaming import LocalAgreement
 from .events import (  # noqa: F401 - re-exported for consumers
-    ComparisonMsg, Dropped, Error, Event, Final, Held, Level, Listening, Loading, Mode, ModelLoaded,
+    ComparisonMsg, Dropped, Error, Event, Final, Held, Level, Listening, Loading, Mode, ModelLoaded, Revised,
     NothingRecognized, NotTranslated, Partial, Progress, SentenceMsg, SpeakingEnded, SpeakingStarted,
     SpeechStarted, Stall, Stopped, Summary, Translated, TurnCancelled, TurnEnded, TurnStarted,
 )
 from .translate import context as ctx
+from .translate import revision as rev
 from .ring import UtteranceRing
 from .vad import Segment, Segmenter, VadSettings
 
@@ -198,6 +199,7 @@ class Stats:
     translated: int = 0
     not_translated: int = 0
     revisions: int = 0
+    revise_ms: list[int] = field(default_factory=list)  # each time the translator was asked again
     dropped: int = 0
     stalls_ms: list[int] = field(default_factory=list)
     passes: int = 0  # recognition passes, provisional ones included
@@ -218,6 +220,8 @@ class Stats:
             "translated": self.translated,
             "not_translated": self.not_translated,
             "revisions": self.revisions,
+            "revision_passes": len(self.revise_ms),
+            "revise_ms_median": sorted(self.revise_ms)[len(self.revise_ms) // 2] if self.revise_ms else None,
             "dropped": self.dropped,
             "worst_stall_ms": max(self.stalls_ms, default=0),
             "asr_passes": self.passes,
@@ -941,7 +945,9 @@ class TranslationThread:
         py = pipeline.pyconfig.context
         mode = pipeline.options.context if pipeline.options.context is not None else py.mode
         # Carry-forward: each sentence is translated knowing what came before.
-        self.history = ctx.History(py.sentences if mode == "carry" else 0, py.token_budget)
+        self.history = ctx.History(py.sentences if mode in ("carry", "revision") else 0, py.token_budget)
+        # Revision: and the last few are translated again once a new one arrives.
+        self.reviser = rev.Reviser(py.revise_sentences, py.revise_max_age_s, py.revise_max_words) if mode == "revision" else None
         self._count = getattr(translator, "count_tokens", lambda text: len(text) // 3)
         self.queue: queue.Queue = queue.Queue(TRANSLATION_QUEUE)
         self._thread = threading.Thread(target=self._run, name="pyvolis-translate", daemon=True)
@@ -1005,9 +1011,33 @@ class TranslationThread:
             log.info("sentence %s\n  [%s] %s\n  [%s] %s\n  (%d ms to translate on the %s)", sentence.id, source,
                      sentence.text, self.target, result.text, ms, result.device.upper())
             emit(Translated(sentence.id, result.text, self.target, ms, result.device, self.pipeline.translator_name))
-            if self.speaker is not None:
+            spoken = self.speaker is not None
+            if spoken:
                 self.speaker.submit(sentence.id, result.text, self.target, cut_at)
+            if self.reviser is not None:
+                self.reviser.add(rev.Done(sentence.id, sentence.text, source, result.text, sentence.end, spoken))
+                self._revise()
         log.info("translation stopped")
+
+    def _revise(self) -> None:
+        """Translate the last few sentences again together and replace what
+        changed. Skipped while a live conversation has sentences waiting:
+        new speech comes before second thoughts."""
+        if not self.pipeline.source.lossless and not self.queue.empty():
+            return
+        began = time.perf_counter()
+        before = self.reviser.passes
+        changes = self.reviser.revise(self.translator, self.history.context(self._count), self.target,
+                                      list(self.pipeline.glossary))
+        if self.reviser.passes > before:
+            self.pipeline.stats.revise_ms.append(int((time.perf_counter() - began) * 1000))
+        if not changes:
+            return
+        self.history.replace_last([d.translation for d in self.reviser.window()])
+        for change in changes:
+            self.pipeline.stats.revisions += 1
+            log.info("sentence %s revised\n  was: %s\n  now: %s", change.id, change.old, change.new)
+            self.pipeline.emit(Revised(change.id, change.old, change.new))
 
 
 class SpeakThread:

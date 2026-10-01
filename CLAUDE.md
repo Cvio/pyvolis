@@ -64,5 +64,5 @@ function; no settings no milestone needs.
 
 ## Status
 
-P0 to P7 done (through the window, voice output, file mode, continuous and turn-based modes,
-streaming recognition and carry-forward context). See `HANDOFF.md`.
+P0 to P8 done (through the window, voice output, file mode, continuous and turn-based modes,
+streaming recognition, carry-forward context and revision mode). See `HANDOFF.md`.
