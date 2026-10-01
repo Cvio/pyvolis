@@ -4,9 +4,9 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P3 of `pyvolis-build.md`. pyvolis finds models, listens to the microphone,
-transcribes with any installed recognizer, and translates sentences with any GGUF translator
-(`--translate`); the two aren't joined into a live pipeline yet.
+Status: milestone P4 of `pyvolis-build.md`. pyvolis transcribes and translates audio files
+(`--file`) and the microphone (`--listen`) with any installed recognizer and GGUF translator.
+The window arrives at P5.
 
 ## Setup (development)
 
@@ -62,6 +62,28 @@ trust_remote_code = false
 
 Languages come from the model card's `language:` when there is one. Otherwise the model is
 listed as "languages unknown" and offered for every language.
+
+## Translating a file
+
+```powershell
+.\.venv\Scripts\python.exe -m pyvolis --file talk.m4a --from es-MX --to en --fast
+```
+
+WAV, MP3, M4A, FLAC, OGG and Opus open as they are. The file goes through the same pipeline as
+the microphone. `--asr <folder>` and `--mt <id>` pick the models (as `--report` lists them),
+`--fast` runs as fast as the models allow (otherwise at playing speed), and `--export <dir>`
+says where to write; the default is `exports\<file>-<date>\`:
+
+| File | What it holds |
+|---|---|
+| `transcript.txt`, `translation.txt` | one sentence per line, side by side |
+| `source.srt`, `translation.srt` | subtitles with timings |
+| `events.jsonl` | every event in order; the first line is the full configuration (models and their file hashes, prompt, settings), the last the summary |
+
+If a reference sits beside the file, `talk.m4a.ref.json` with `{"transcript": "...",
+"translation": "..."}` (or `talk.m4a.ref.srt` for the transcript), the run ends with the
+transcript's CER and the translation's chrF, cleaned as model-bench cleans them.
+`scripts\make_fixture_file.py es_419 en` builds such a file from the test clips.
 
 ## Settings
 

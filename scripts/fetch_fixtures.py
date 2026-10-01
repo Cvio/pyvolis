@@ -10,8 +10,11 @@ MB come down instead of hundreds.
     tests/fixtures/fleurs/<lang>/<id>.wav    16 kHz mono, as published
     tests/fixtures/fleurs/<lang>/refs.jsonl  {"id", "file", "transcript", "raw_transcript", "gender"}
 
-The aligned FLORES+ English translations are added when translation scoring
-needs them (P4): FLORES+ is gated and needs a login.
+Then each clip gets its sentence in other languages from FLORES+, which
+FLEURS was read from: "references" in refs.jsonl, keyed by language tag
+(en, es, ar, ar-IQ, fa). FLEURS's ids aren't FLORES+ row numbers, so the
+sentence is found by its English text (FLEURS's English list shares the ids).
+FLORES+ is gated: accept its terms on Hugging Face, then .\fetch-model.ps1 -Login.
 """
 
 from __future__ import annotations
@@ -49,6 +52,52 @@ def rows(lang: str) -> dict[str, dict]:
     return out
 
 
+FLORES = "openlanguagedata/flores_plus"
+FLORES_LANGS = {"en": "eng_Latn", "es": "spa_Latn", "ar": "arb_Arab", "ar-IQ": "acm_Arab", "fa": "pes_Arab"}
+
+
+def _key(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def add_references() -> None:
+    """Every clip's sentence in each FLORES_LANGS language, matched through
+    its English text."""
+    import os
+
+    os.environ["HF_HOME"] = str(REPO / ".uv" / "hf")
+    from huggingface_hub import hf_hub_download
+
+    english = {}  # FLEURS id -> English sentence
+    with fetch(f"{BASE}/en_us/test.tsv") as response:
+        for fields in csv.reader(io.StringIO(response.read().decode("utf-8")), delimiter="\t", quoting=csv.QUOTE_NONE):
+            if len(fields) >= 3:
+                english[fields[0]] = fields[2]
+    rows = {}  # (split, row) -> {tag: text}
+    by_english = {}
+    for split in ("dev", "devtest"):
+        for tag, code in FLORES_LANGS.items():
+            path = hf_hub_download(FLORES, f"{split}/{code}.jsonl", repo_type="dataset")
+            for n, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines()):
+                rows.setdefault((split, n), {})[tag] = json.loads(line)["text"]
+        for (sp, n), texts in rows.items():
+            if sp == split:
+                by_english[_key(texts["en"])] = texts
+    for lang in LANGUAGES:
+        refs_path = OUT / lang / "refs.jsonl"
+        refs = [json.loads(x) for x in refs_path.read_text(encoding="utf-8").splitlines()]
+        matched = 0
+        for ref in refs:
+            texts = by_english.get(_key(english.get(ref["id"], "")))
+            if texts:
+                ref["references"] = dict(texts)
+                matched += 1
+        with refs_path.open("w", encoding="utf-8") as f:
+            for ref in refs:
+                f.write(json.dumps(ref, ensure_ascii=False) + "\n")
+        print(f"{lang}: {matched} of {len(refs)} clips matched to FLORES+")
+
+
 def main() -> int:
     for lang in LANGUAGES:
         target = OUT / lang
@@ -74,6 +123,7 @@ def main() -> int:
             for ref in refs:
                 f.write(json.dumps(ref, ensure_ascii=False) + "\n")
         print(f"{lang}: {len(refs)} clips in {target}")
+    add_references()
     return 0
 
 

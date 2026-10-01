@@ -94,7 +94,7 @@ def test_the_pipeline_turns_a_file_into_final_transcripts():
     events: queue.Queue = queue.Queue()
     gap = np.zeros(16000, np.float32)
     source = ArraySource(np.concatenate([gap, audio, gap]))
-    out = run_to_end(Pipeline(ROOT, config, Options(), events, source, PyvolisConfig()), events)
+    out = run_to_end(Pipeline(ROOT, config, Options(translate=False), events, source, PyvolisConfig()), events)
     assert not out.errors, out.errors
     assert out.finals and "viajeros" in " ".join(f.text for f in out.finals)
 
@@ -112,7 +112,7 @@ def test_silence_and_noise_produce_no_text():
         parts += [(rng.standard_normal(4000) * 0.3).astype(np.float32), np.zeros(sr, np.float32)]
     config = Config.parse(f'[asr]\nengine = "{name}"\n[languages]\nsource = "es"\n')
     events: queue.Queue = queue.Queue()
-    out = run_to_end(Pipeline(ROOT, config, Options(), events, ArraySource(np.concatenate(parts)),
+    out = run_to_end(Pipeline(ROOT, config, Options(translate=False), events, ArraySource(np.concatenate(parts)),
                               PyvolisConfig()), events)
     assert not out.errors, out.errors
     assert out.finals == [], [f.text for f in out.finals]
@@ -142,7 +142,7 @@ def test_a_hallucination_is_dropped_and_reported_with_its_reason(monkeypatch, ca
     events: queue.Queue = queue.Queue()
     gap = np.zeros(16000, np.float32)
     with caplog.at_level("INFO"):
-        out = run_to_end(Pipeline(ROOT, config, Options(), events, ArraySource(np.concatenate([gap, audio, gap])),
+        out = run_to_end(Pipeline(ROOT, config, Options(translate=False), events, ArraySource(np.concatenate([gap, audio, gap])),
                                   PyvolisConfig()), events)
     assert out.finals == []
     assert out.dropped and out.dropped[0].text == "Gracias por ver el video." and out.dropped[0].reasons

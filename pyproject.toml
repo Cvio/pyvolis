@@ -33,6 +33,8 @@ dependencies = [
     "llama-cpp-python==0.3.35",
     # llama-cpp-python renders chat templates with it; pyvolis does too.
     "jinja2",
+    # chrF for the quick scores, the implementation model-bench uses.
+    "sacrebleu",
 ]
 
 [project.scripts]

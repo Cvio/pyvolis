@@ -29,6 +29,8 @@ COMMANDS:
     --listen            Capture from the microphone and transcribe
     --translate <TEXT>  Translate one sentence and print it
     --print-prompt <TEXT>  Print the exact prompt the translator would get
+    --file <PATH>       Transcribe and translate an audio file, write an export
+                        folder, and print scores if a reference is beside it
 
 OPTIONS FOR --listen:
     --seconds <N>       Stop cleanly after N seconds (otherwise: Ctrl-C)
@@ -41,6 +43,12 @@ OPTIONS FOR --translate AND --print-prompt:
     --to <TAG>          Target (default: [languages].target)
     --mt <ID>           Translator, as --report lists it (default: pyvolis.toml)
     --prompt <NAME>     Prompt file in prompts\\ (default: pyvolis.toml)
+
+OPTIONS FOR --file (and --from, --to, --mt, --prompt as above):
+    --asr <FOLDER>      Recognizer, a folder in models\\asr\\ (default: [asr].engine)
+    --fast              As fast as the models allow (default: real time)
+    --export <DIR>      Where to write (default: exports\\<file>-<date>\\)
+    --no-translate      Transcribe only
 
     -h, --help          Show this message
 
@@ -64,6 +72,11 @@ class Command:
     target: str = ""
     mt: str = ""
     prompt: str = ""
+    path: str = ""  # --file
+    asr: str = ""
+    fast: bool = False
+    export: str = ""
+    translate: bool = True
 
 
 def parse(args: list[str]) -> Command:
@@ -110,6 +123,25 @@ def parse(args: list[str]) -> Command:
             values[arg] = value
         return Command(first[2:], text=rest[0], source=values["--from"], target=values["--to"],
                        mt=values["--mt"], prompt=values["--prompt"])
+    if first == "--file":
+        if not rest or rest[0].startswith("--"):
+            raise UsageError("--file needs the path of an audio file")
+        values = {"--from": "", "--to": "", "--mt": "", "--prompt": "", "--asr": "", "--export": ""}
+        flags = {"--fast": False, "--no-translate": False}
+        options = iter(rest[1:])
+        for arg in options:
+            if arg in flags:
+                flags[arg] = True
+                continue
+            if arg not in values:
+                raise _unknown(arg)
+            value = next(options, None)
+            if value is None:
+                raise UsageError(f"{arg} needs a value")
+            values[arg] = value
+        return Command("file", path=rest[0], source=values["--from"], target=values["--to"], mt=values["--mt"],
+                       prompt=values["--prompt"], asr=values["--asr"], export=values["--export"],
+                       fast=flags["--fast"], translate=not flags["--no-translate"])
     raise _unknown(first)
 
 
@@ -160,6 +192,13 @@ def run(args: list[str], root: Path) -> int:
         return listen.run(root, config, command.seconds, Options(command.write_wav, command.compare))
     if command.name in ("translate", "print-prompt"):
         return run_translate(root, config, command)
+    if command.name == "file":
+        from .filerun import FileRun, run as run_file
+
+        return run_file(root, config, FileRun(
+            Path(command.path), command.source, command.target, command.asr, command.mt, command.prompt,
+            command.fast, Path(command.export) if command.export else None, command.translate,
+        ))
     return run_report(root, config)
 
 

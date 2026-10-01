@@ -21,7 +21,11 @@ Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   each model's own chat template, Rust's cleaning and three guards (`translate/guards.py`),
   prompt files (`prompts/`), several translators (`[translate]` in `pyvolis.toml`), and
   `--translate` / `--print-prompt`. `parity/translate.py` compares with Rust volis.
-- Next: P4 (file mode on the command line). Wait for the go-ahead.
+- **P4 done:** `--file` (`filerun.py`): an audio file through the live pipeline, with sentences
+  (`sentences.py`), a translation thread, the events (`events.py`), the export folder
+  (`export.py`) and quick scores (`scoring.py`, with model-bench's `textclean.py` copied
+  verbatim). `scripts/make_fixture_file.py` builds test recordings with references.
+- Next: P5 (the window, with file mode). The user tries file mode first.
 
 ## Environment, as verified at P0
 
@@ -99,6 +103,33 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     with thinking turned off through the template's `enable_thinking`.
 20. **Several translators**: `[translate].model` in `pyvolis.toml` (default: the file at the
     top of `models\mt\`, Rust's); `[translate].prompt` picks a prompt file.
+
+21. **Translation is per sentence, not per utterance** (agreed with the user before P4). A stage
+    between recognition and translation splits each transcript at final punctuation; every
+    sentence has an id, "<utterance>.<n>", used by every event, the export and (later) the
+    timeline and revisions. Text with no final punctuation stays one sentence per utterance,
+    which is Rust's behaviour.
+22. **Events are one set for everything** (`events.py`), defined through P8 (partial, held,
+    revised) so `events.jsonl` won't change shape. `--listen`, file mode and the window all
+    consume them.
+23. **From a file, nothing is dropped:** where Rust drops an utterance the translator can't take
+    in time, a file run waits. Live use keeps Rust's behaviour.
+24. **A stall probe** (a 50 ms timer on its own thread) reports when every Python thread is held
+    up, the early warning for the window's responsiveness. Worst stall so far: 0 ms, with
+    Whisper (GPU) and Qwen3 (CPU) running together.
+
+## P4 findings
+
+- **The check:** a 124 s Spanish fixture recording, Spanish Whisper and Qwen3, `--fast`: every
+  export file written; transcript CER 0.9%, translation chrF 58.4 against FLORES+. Arabic
+  through Cohere Transcribe: CER 1.9%, chrF 61.9. ASR real-time factor 0.36 and 0.19;
+  translation median about 2.3 to 2.4 s a sentence on the CPU.
+- **Scores equal model-bench's** to four decimals on the same text (checked with model-bench's
+  own code and environment).
+- **References:** `tests/fetch-fixtures.ps1` now aligns each FLEURS clip with FLORES+ (en, es,
+  ar, ar-IQ via Mesopotamian Arabic, fa) by its English text; FLEURS's ids aren't FLORES+ rows.
+- **A `.ref.srt` is read as the transcript.** The spec doesn't say which side an SRT reference
+  is; a translation reference needs the `.ref.json` form.
 
 ## P3 findings
 
