@@ -159,8 +159,9 @@ class Partial(Event):
     """P7, streaming: provisional text of the utterance so far."""
 
     utterance: int
-    text: str
-    committed: str = ""  # the part already committed
+    text: str  # provisional: the current best guess, which may still change
+    committed: str = ""  # everything committed in this utterance so far
+    pending: str = ""  # committed words that don't yet make a whole sentence
 
 
 @dataclass

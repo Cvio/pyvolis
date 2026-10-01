@@ -73,7 +73,7 @@ class NemoTransducerAsr:
         except Exception as e:
             raise AsrError(f"sherpa-onnx refused to load the transducer model in {engine.dir}: {e}") from e
 
-    def transcribe(self, audio: np.ndarray, language: str) -> AsrResult:
+    def transcribe(self, audio: np.ndarray, language: str, timestamps: bool = True) -> AsrResult:
         began = time.perf_counter()
         try:
             text = _decode(self._recognizer, audio)
@@ -144,7 +144,7 @@ class WhisperAsr:
             )
         return self._recognizers[language]
 
-    def transcribe(self, audio: np.ndarray, language: str) -> AsrResult:
+    def transcribe(self, audio: np.ndarray, language: str, timestamps: bool = True) -> AsrResult:
         # Whisper takes plain language codes only; the variety matters through
         # which model hears it, not here.
         language = varieties.language_of(language)

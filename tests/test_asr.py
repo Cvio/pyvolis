@@ -128,7 +128,7 @@ def test_a_hallucination_is_dropped_and_reported_with_its_reason(monkeypatch, ca
     class Invents:
         name = "invents"
 
-        def transcribe(self, pcm, language):
+        def transcribe(self, pcm, language, timestamps=True):
             return asr.AsrResult("Gracias por ver el video.", language="es")
 
         def prepare(self, language):

@@ -272,3 +272,48 @@ def test_several_translators_are_listed_and_the_default_is_rusts_file():
     assert tr.choose(ROOT, "").top_level
     with pytest.raises(tr.TranslateError, match="not in"):
         tr.choose(ROOT, "no-such/model.gguf")
+
+
+# ---------------------------------------------------------------- P7: context and glossary in the prompt
+
+
+def test_context_goes_in_as_earlier_turns_of_the_chat(qwen):
+    request = tr.TranslationRequest(
+        "No la he visto desde ayer.", "es", "en",
+        context=[tr.Turn("¿Dónde está María?", "Where is María?")])
+    prompt = qwen.prompt(request)
+    system = PROMPT.system_text("es", "en")
+    assert prompt == (
+        f"<|im_start|>system\n{system}<|im_end|>\n"
+        "<|im_start|>user\n¿Dónde está María?<|im_end|>\n"
+        "<|im_start|>assistant\nWhere is María?<|im_end|>\n"
+        "<|im_start|>user\nNo la he visto desde ayer.<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    ), "user turn = source, assistant turn = translation; the instructions are untouched"
+
+
+def test_without_context_or_glossary_the_prompt_is_still_rusts(qwen):
+    request = tr.TranslationRequest("¿Dónde está la estación?", "es", "en")
+    assert qwen.prompt(request) == rust_prompt_for("¿Dónde está la estación?", "es", "en")
+
+
+def test_the_glossary_is_one_line_of_the_system_text(qwen):
+    request = tr.TranslationRequest("Vamos a Bellas Artes.", "es", "en", glossary=["Bellas Artes", "Susie Wolff"])
+    prompt = qwen.prompt(request)
+    assert "output it unchanged.\nKeep these names and terms exactly: Bellas Artes, Susie Wolff.<|im_end|>" in prompt
+    assert "Bellas Artes" in qwen.translate(request).text
+
+
+def test_reciting_the_glossary_line_is_caught():
+    request = tr.TranslationRequest("x", "es", "en", glossary=["Bellas Artes"])
+    system = tr.system_text(PROMPT, request)
+    assert guards.leaks_the_prompt("Keep these names and terms exactly: Bellas Artes.", system)
+
+
+def test_context_changes_a_translation_that_depends_on_it(qwen):
+    """The pronoun in the second sentence is a person only if the first is known."""
+    second = "No la he visto desde ayer."
+    alone = qwen.translate(tr.TranslationRequest(second, "es", "en")).text
+    with_context = qwen.translate(tr.TranslationRequest(
+        second, "es", "en", context=[tr.Turn("¿Dónde está María?", "Where is María?")])).text
+    assert "her" in with_context.lower(), f"alone: {alone!r}; with context: {with_context!r}"

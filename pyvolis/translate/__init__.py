@@ -89,6 +89,16 @@ def load(entry: TranslatorEntry, prompt: PromptFile) -> Translator:
     raise TranslateError(f'translator "{entry.id}" has backend "{entry.backend}", which pyvolis can\'t run yet')
 
 
+def system_text(prompt: PromptFile, request: TranslationRequest) -> str:
+    """The system turn for a request: the prompt file's text for the pair,
+    then the session glossary when there is one."""
+    from .context import glossary_line
+
+    text = prompt.system_text(request.source, request.target)
+    glossary = glossary_line(request.glossary)
+    return f"{text}\n{glossary}" if glossary else text
+
+
 def translate_checked(translator, request: TranslationRequest, generate) -> TranslationResult:
     """Rust's `Translator::translate` around any backend's raw generation:
     unknown tags refused before any prompt is built, then clean, then the three
@@ -108,9 +118,9 @@ def translate_checked(translator, request: TranslationRequest, generate) -> Tran
     cleaned = guards.clean(raw)
     if cleaned != raw.strip():
         log.debug("translation cleaned from %r to %r", raw, cleaned)
-    system_text = translator.prompt_file.system_text(request.source, request.target)
+    # Reciting the instructions, the glossary or the context is no translation.
     context = [t.source for t in request.context] + [t.translation for t in request.context]
-    if guards.leaks_the_prompt(cleaned, system_text, context):
+    if guards.leaks_the_prompt(cleaned, system_text(translator.prompt_file, request), context):
         raise Refused(
             "recited",
             "the model recited its own instructions instead of translating. This happens when the "

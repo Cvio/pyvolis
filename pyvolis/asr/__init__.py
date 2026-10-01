@@ -64,9 +64,12 @@ class SegmentAsr(Protocol):
 
     name: str
 
-    def transcribe(self, audio: np.ndarray, language: str) -> AsrResult:
+    def transcribe(self, audio: np.ndarray, language: str, timestamps: bool = True) -> AsrResult:
         """`audio` is a complete utterance, 16 kHz mono float32 in [-1, 1].
-        `language` may be a variety; only its language part reaches the model."""
+        `language` may be a variety; only its language part reaches the model.
+        `timestamps=False` says word timings aren't needed: for Whisper they
+        cost about a second a call, which live use and most streaming passes
+        shouldn't pay."""
         ...
 
     def prepare(self, language: str) -> None:

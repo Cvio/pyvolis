@@ -1,6 +1,6 @@
 """Hallucination guards: text a recognizer produced from silence or noise.
 
-New in pyvolis. Three guards, each switchable in pyvolis.toml `[guards]`:
+New in pyvolis. Four guards, each switchable in pyvolis.toml `[guards]`:
 
   vad_probability  drop the text of a segment whose Silero speech probability
                    never reaches `min_peak_probability` (default 0.8). The
@@ -11,6 +11,12 @@ New in pyvolis. Three guards, each switchable in pyvolis.toml `[guards]`:
                    nothing else is left.
   stock_phrases    phrases Whisper invents on silence, per language, from
                    config/hallucinations.toml (user-editable).
+  sparse           far too few words for the speech detected: under
+                   `min_words_per_second` (default one word per 3 s) over
+                   `sparse_min_seconds` (3 s) or more. Noise shaped like
+                   speech gets past the detector, and Whisper answers 6 s of
+                   it with a lone "y". Only detected speech is counted, never
+                   the pauses inside a turn, so one slow word isn't dropped.
 
 Every drop and every trim is reported with its reason, and logged by the
 caller, so a wrong one can be spotted. Punctuation is never touched here:
@@ -123,17 +129,28 @@ class Guards:
         repeats: bool = True,
         stock_phrases: bool = True,
         scorer: SpeechScorer | None = None,
+        sparse: bool = True,
+        min_words_per_second: float = 1 / 3,
+        sparse_min_seconds: float = 3.0,
     ) -> None:
+        self.use_sparse = sparse
+        self.min_words_per_second = min_words_per_second
+        self.sparse_min_seconds = sparse_min_seconds
         self.phrases = phrases
         self.use_vad = vad_probability and scorer is not None
         self.use_repeats = repeats
         self.use_phrases = stock_phrases
         self.scorer = scorer
 
-    def check(self, text: str, language: str, audio: np.ndarray | None = None) -> Verdict:
+    def check(self, text: str, language: str, audio: np.ndarray | None = None,
+              speech_seconds: float | None = None) -> Verdict:
+        """`speech_seconds` is how much speech the detector heard (for a turn,
+        its segments added up); without it, the audio's own length."""
         verdict = Verdict(text.strip())
         if not verdict.text:
             return verdict
+        if speech_seconds is None and audio is not None:
+            speech_seconds = len(audio) / 16_000
         if self.use_vad and audio is not None and not self.scorer.has_clear_speech(audio):
             verdict.reasons.append(
                 f"speech probability never reached {self.scorer.threshold:.2f} in the segment"
@@ -161,6 +178,13 @@ class Guards:
                         verdict.reasons.append(f'ended with the stock phrase "{p}", cut off')
         if not normalise(verdict.text):
             return _drop(verdict)
+        if self.use_sparse and speech_seconds is not None and speech_seconds >= self.sparse_min_seconds:
+            words = len(verdict.text.split())
+            if words < speech_seconds * self.min_words_per_second:
+                verdict.reasons.append(
+                    f"{words} word(s) for {speech_seconds:.1f} s of detected speech: too few to be what was said"
+                )
+                return _drop(verdict)
         return verdict
 
 

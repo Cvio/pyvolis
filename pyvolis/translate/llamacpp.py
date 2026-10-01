@@ -22,7 +22,7 @@ import time
 import numpy as np
 
 from ..models import Translator as TranslatorEntry
-from . import TranslateError, TranslationRequest, TranslationResult, translate_checked
+from . import TranslateError, TranslationRequest, TranslationResult, system_text, translate_checked
 from .prompts import PromptFile
 
 log = logging.getLogger(__name__)
@@ -64,6 +64,8 @@ class LlamaTranslator:
                 "pyvolis builds every prompt from the model's own template"
             )
         self.architecture = self._llama.metadata.get("general.architecture", "")
+        self._evaluated: list[int] = []  # the last prompt's tokens, still in the model's cache
+        self.reused_tokens = 0
         self._vocab = llama_cpp.llama_model_get_vocab(self._llama._model.model)
         self._is_eog = llama_cpp.llama_vocab_is_eog
         log.info("loaded translation model %s (%s) on the %s in %d ms", entry.path, self.architecture,
@@ -74,13 +76,16 @@ class LlamaTranslator:
     def prompt(self, request: TranslationRequest) -> str:
         """The chat template rendered with the system text, any context as
         earlier turns (P7), and the text to translate."""
-        system = self.prompt_file.system_text(request.source, request.target)
-        messages = [{"role": "system", "content": system}]
+        messages = [{"role": "system", "content": system_text(self.prompt_file, request)}]
         for turn in request.context:
             messages.append({"role": "user", "content": turn.source})
             messages.append({"role": "assistant", "content": turn.translation})
         messages.append({"role": "user", "content": request.text.strip()})
         return render(self._template, messages, self._special_tokens(), self.architecture)
+
+    def count_tokens(self, text: str) -> int:
+        """How many of this model's tokens a text is (for the context budget)."""
+        return len(self._llama.tokenize(text.encode("utf-8"), add_bos=False, special=False))
 
     def _special_tokens(self) -> dict[str, str]:
         tokens = {}
@@ -93,10 +98,18 @@ class LlamaTranslator:
     # ------------------------------------------------------------ decode
 
     def translate(self, request: TranslationRequest) -> TranslationResult:
-        return translate_checked(self, request, lambda r: self.run(self.prompt(r)))
+        # With context, most of the prompt is the previous sentence's prompt
+        # again; what the model already evaluated is kept. Without context
+        # every sentence starts fresh, exactly as Rust does.
+        reuse = bool(request.context)
+        return translate_checked(self, request, lambda r: self.run(self.prompt(r), reuse))
 
-    def run(self, prompt: str) -> str:
-        """Decode one prompt to completion, greedily, from a fresh context."""
+    def run(self, prompt: str, reuse: bool = False) -> str:
+        """Decode one prompt to completion, greedily. From a fresh context,
+        unless `reuse`: then the tokens this prompt shares with the last one,
+        from the start, are not evaluated again (the same result, less work:
+        carry-forward context re-sends the system text and the earlier turns
+        with every sentence)."""
         llama = self._llama
         tokens = llama.tokenize(prompt.encode("utf-8"), add_bos=False, special=True)
         if len(tokens) >= CONTEXT_TOKENS:
@@ -104,11 +117,24 @@ class LlamaTranslator:
                 f"the utterance is too long to translate: {len(tokens)} tokens against a "
                 f"{CONTEXT_TOKENS} token context"
             )
-        # A fresh start per utterance: one cannot contaminate the next.
-        llama.reset()
-        llama._ctx.kv_cache_clear()
+        kept = 0
+        if reuse:
+            for a, b in zip(tokens, self._evaluated):
+                if a != b:
+                    break
+                kept += 1
+            kept = min(kept, len(tokens) - 1)  # at least one token must be evaluated
+        if kept:
+            llama._ctx.kv_cache_seq_rm(-1, kept, -1)  # forget everything after the shared part
+            llama.n_tokens = kept
+        else:
+            # A fresh start: one sentence cannot contaminate the next.
+            llama.reset()
+            llama._ctx.kv_cache_clear()
+        self.reused_tokens = kept
         try:
-            llama.eval(tokens)
+            llama.eval(tokens[kept:])
+            self._evaluated = list(tokens)
             out = bytearray()
             for _ in range(MAX_OUTPUT_TOKENS):
                 token = self._greedy()

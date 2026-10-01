@@ -143,6 +143,8 @@ class HfAsr:
         else:
             cls = transformers.AutoModelForSpeechSeq2Seq
         kwargs = dict(dtype=self.dtype, **common)
+        if self.model_type == "whisper":
+            kwargs["attn_implementation"] = "sdpa"  # the faster attention; word timings still work
         if self.model_type in _ctc_types() and any(self._engine.dir.glob("adapter.*.safetensors")):
             # MMS: keep the adapter weights loadable per language.
             kwargs["ignore_mismatched_sizes"] = True
@@ -151,7 +153,7 @@ class HfAsr:
 
     # ------------------------------------------------------------ transcribe
 
-    def transcribe(self, audio: np.ndarray, language: str) -> AsrResult:
+    def transcribe(self, audio: np.ndarray, language: str, timestamps: bool = True) -> AsrResult:
         import torch
 
         language = varieties.language_of(language)
@@ -160,7 +162,7 @@ class HfAsr:
         try:
             with torch.inference_mode():
                 if self.model_type == "whisper":
-                    text, words = self._whisper(audio, language)
+                    text, words = self._whisper(audio, language, timestamps)
                     confidence = None
                 elif self.model_type == "cohere_asr":
                     text, words, confidence = self._cohere(audio, language), None, None
@@ -181,11 +183,13 @@ class HfAsr:
         inputs = self._processor(audio, sampling_rate=SAMPLE_RATE, return_tensors="pt", **kwargs)
         return inputs.to(self.device, dtype=self.dtype) if hasattr(inputs, "to") else inputs
 
-    def _whisper(self, audio: np.ndarray, language: str):
+    def _whisper(self, audio: np.ndarray, language: str, timestamps: bool = True):
         log.info('  "%s" is told the language "%s"', self.name, language)
         inputs = self._processor(audio, sampling_rate=SAMPLE_RATE, return_tensors="pt", return_attention_mask=True)
         features = inputs.input_features.to(self.device, dtype=self.dtype)
-        with_words = getattr(self._model.generation_config, "alignment_heads", None) is not None
+        # Word timings come from the alignment heads and cost about a second
+        # a call (measured: 1.3 s against 0.3 s for 6 s of audio), so only on request.
+        with_words = timestamps and getattr(self._model.generation_config, "alignment_heads", None) is not None
         out = self._model.generate(
             features, attention_mask=inputs.attention_mask.to(self.device), language=language,
             task="transcribe", return_token_timestamps=with_words, return_dict_in_generate=True,

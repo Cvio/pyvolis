@@ -63,6 +63,16 @@ def test_a_phrase_list_is_per_language():
     assert not guards().check("Thank you.", "es").dropped
 
 
+def test_far_too_few_words_for_the_speech_is_dropped():
+    """6 s of speech-shaped noise came out of Whisper as a lone "y"."""
+    verdict = guards().check("y", "es", speech_seconds=6.2)
+    assert verdict.dropped and "too few" in verdict.reasons[0]
+    assert not guards().check("Sí.", "es", speech_seconds=1.2).dropped, "a short answer is short speech"
+    assert not guards().check("Bueno, vamos.", "es", speech_seconds=5.0).dropped, "two words in 5 s is slow, not noise"
+    assert not guards(sparse=False).check("y", "es", speech_seconds=6.2).dropped
+    assert guards().check("y", "es", np.zeros(16000 * 7, np.float32)).dropped, "the audio's length stands in"
+
+
 def test_each_guard_can_be_switched_off():
     off = guards(repeats=False, stock_phrases=False)
     assert off.check("Gracias por ver el video.", "es").text == "Gracias por ver el video."

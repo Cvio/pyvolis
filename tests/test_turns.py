@@ -210,7 +210,7 @@ def test_a_split_turn_is_transcribed_part_by_part_and_joined():
     from pyvolis.asr import AsrResult, Word
 
     class Counts:
-        def transcribe(self, pcm, language):
+        def transcribe(self, pcm, language, timestamps=True):
             return AsrResult(f"{len(pcm)} muestras.", [Word("x", 0.0, 0.5)], None, "es", 0.1)
 
     pcm = np.zeros(48_000, np.float32)

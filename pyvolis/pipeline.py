@@ -8,7 +8,14 @@ consumers of the same events, as in Rust.
 
 Threads, as Rust, with the costs in mind:
   capture or file source   hands 16 kHz chunks on (audio.py, ArraySource)
-  pipeline                 VAD and recognition, one utterance at a time
+  pipeline                 the detector only: it must never fall behind the audio
+  recognition              its own thread: the final pass over each utterance
+                           and, when streaming, a provisional pass over the
+                           growing utterance every interval (LocalAgreement).
+                           Live, if a provisional pass is still running when
+                           the next is due, only the newest is kept; a fast
+                           file run does every pass, so it measures what live
+                           use would produce
   translation              its own thread, so a slow model never stalls
                            recognition; a queue of TRANSLATION_QUEUE sentences
   speaking                 synthesis on its own thread; the sound card's
@@ -40,11 +47,13 @@ from . import translate as tr
 from .asr import guards as guards_mod
 from .audio import SAMPLE_RATE
 from .config import Config, PyvolisConfig
+from .asr.streaming import LocalAgreement
 from .events import (  # noqa: F401 - re-exported for consumers
-    ComparisonMsg, Dropped, Error, Event, Final, Level, Listening, Loading, Mode, ModelLoaded,
-    NothingRecognized, NotTranslated, Progress, SentenceMsg, SpeakingEnded, SpeakingStarted, SpeechStarted,
-    Stall, Stopped, Summary, Translated, TurnCancelled, TurnEnded, TurnStarted,
+    ComparisonMsg, Dropped, Error, Event, Final, Held, Level, Listening, Loading, Mode, ModelLoaded,
+    NothingRecognized, NotTranslated, Partial, Progress, SentenceMsg, SpeakingEnded, SpeakingStarted,
+    SpeechStarted, Stall, Stopped, Summary, Translated, TurnCancelled, TurnEnded, TurnStarted,
 )
+from .translate import context as ctx
 from .ring import UtteranceRing
 from .vad import Segment, Segmenter, VadSettings
 
@@ -84,6 +93,12 @@ class Options:
     translate: bool = True
     # Voice output. None = [tts].enabled for the microphone, off for a file.
     speak: bool | None = None
+    # P7, each None = pyvolis.toml: streaming recognition, context ("off" |
+    # "carry"), holding short fragments; and the session glossary.
+    streaming: bool | None = None
+    context: str | None = None
+    hold: bool | None = None
+    glossary: list[str] = field(default_factory=list)
     # Overrides for one run (file mode's --asr / --mt / --prompt); "" = settings.
     asr: str = ""
     mt: str = ""
@@ -185,6 +200,9 @@ class Stats:
     revisions: int = 0
     dropped: int = 0
     stalls_ms: list[int] = field(default_factory=list)
+    passes: int = 0  # recognition passes, provisional ones included
+    held: int = 0  # fragments held to be joined
+    first_text_ms: list[int] = field(default_factory=list)  # speech start to first text shown, per utterance
 
     def summary(self) -> dict:
         ms = sorted(self.translate_ms)
@@ -202,6 +220,9 @@ class Stats:
             "revisions": self.revisions,
             "dropped": self.dropped,
             "worst_stall_ms": max(self.stalls_ms, default=0),
+            "asr_passes": self.passes,
+            "fragments_held": self.held,
+            "first_text_ms_median": sorted(self.first_text_ms)[len(self.first_text_ms) // 2] if self.first_text_ms else None,
         }
 
 
@@ -226,6 +247,7 @@ class Pipeline:
         self.stats = Stats()
         self.recognizer_name = ""
         self.translator_name = ""
+        self.glossary = list(options.glossary)
         self._stop = threading.Event()
         self._commands: queue.Queue = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="pyvolis-pipeline", daemon=True)
@@ -233,6 +255,10 @@ class Pipeline:
     def send(self, command: Command) -> None:
         """Ask the running pipeline for something: a mode, a turn, a cancel."""
         self._commands.put(command)
+
+    def set_glossary(self, terms: list[str]) -> None:
+        """Names and terms to keep exactly, from the next sentence on."""
+        self.glossary = list(terms)
 
     def set_mode(self, mode: str) -> None:
         self.send(Command("set_mode", mode))
@@ -343,8 +369,22 @@ class Pipeline:
         chunks: queue.Queue = queue.Queue(QUEUE_CHUNKS)
         probe = StallProbe(self)
 
-        def handle(segment: Segment, parts=None) -> None:
-            self._handle(segment, recognizer, language, ring, guards, comparison, segments_dir, translation, parts)
+        py = self.pyconfig
+        streaming = self.options.streaming if self.options.streaming is not None else py.asr.streaming
+        interval = max(1, int(py.asr.interval_s * SAMPLE_RATE))
+        hold = self.options.hold if self.options.hold is not None else py.fragments.hold
+        # A fast file run has no wall clock worth the name: the file's own
+        # time decides when a held fragment has waited long enough, and every
+        # provisional pass is done rather than only the newest.
+        fast_file = self.source.lossless and not getattr(self.source, "realtime", False)
+        worker = AsrWorker(
+            self, recognizer, language, ring, guards, comparison, segments_dir, translation,
+            ctx.FragmentHolder(py.fragments.min_words, py.fragments.hold_ms / 1000, enabled=hold and translation is not None),
+            every_pass=fast_file, source_clock=fast_file,
+        )
+
+        def handle(segment: Segment, parts=None, speech_seconds=None) -> None:
+            worker.final(segment, parts, speech_seconds)
 
         # Continuous mode keeps the microphone open. Turn mode keeps the device
         # closed until a turn is taken and closes it again when the turn ends:
@@ -393,7 +433,9 @@ class Pipeline:
             (first, last), parts = found
             log.info("turn: %d ms captured, %d ms of speech in %d part(s)", turn_ms,
                      (last - first) * 1000 // SAMPLE_RATE, len(parts))
-            handle(Segment(active.origin + first, audio[first:last], active.origin + first), parts)
+            # The speech the detector heard, pauses left out (for the guards).
+            speech = sum(len(seg.samples) for seg in segments) / SAMPLE_RATE
+            handle(Segment(active.origin + first, audio[first:last], active.origin + first), parts, speech)
 
         event_level, log_level = LevelMeter(LEVEL_EVENT), LevelMeter(LEVEL_LOG)
         probe.start()
@@ -403,6 +445,7 @@ class Pipeline:
         self.emit(Listening())
         self.emit(Mode(mode))
         speaking, consumed, reported = False, 0, 0.0
+        last_pass = 0  # where the last provisional pass was asked for
         try:
             while not self._stop.is_set():
                 # Commands first. With the microphone closed there is no audio
@@ -500,6 +543,7 @@ class Pipeline:
                         else:
                             log.info("input level: peak %.1f dBFS over the last %d s", due[0], LEVEL_LOG)
                 segments = segmenter.push(chunk)
+                worker.source_time = consumed / SAMPLE_RATE
                 if turn is not None:
                     # In a turn the user decides where the utterance ends; the
                     # detector's segments only mark where the speech is.
@@ -511,7 +555,18 @@ class Pipeline:
                 now = segmenter.speech_in_progress()
                 if now and not speaking:
                     self.emit(SpeechStarted(start=consumed / SAMPLE_RATE))
+                    # The first pass comes after half the interval, so text
+                    # is on screen within about 1.5 s of speech; then every interval.
+                    last_pass = consumed - interval // 2
                 speaking = now
+                # Streaming: every interval while the speech goes on, a pass
+                # over the utterance so far. In a turn the user decides the
+                # boundary, so there is nothing provisional to show.
+                if streaming and now and turn is None and consumed - last_pass >= interval:
+                    last_pass = consumed
+                    snapshot = segmenter.current()
+                    if snapshot is not None:
+                        worker.partial(snapshot)
                 if self.source.duration and consumed / SAMPLE_RATE - reported >= 1.0:
                     reported = consumed / SAMPLE_RATE
                     self.emit(Progress(reported, self.source.duration))
@@ -528,6 +583,7 @@ class Pipeline:
                 self.emit(Progress(self.source.duration, self.source.duration))
         finally:
             self.source.stop()
+            worker.finish(wait=not self._stop.is_set())
             if translation is not None:
                 translation.finish(wait=not self._stop.is_set())
             if speaker is not None:
@@ -541,58 +597,8 @@ class Pipeline:
         g = self.pyconfig.guards
         scorer = guards_mod.SpeechScorer(paths.vad_model_file(self.root), g.min_peak_probability) if g.vad_probability else None
         phrases = guards_mod.load_phrases(paths.hallucinations_file(self.root)) if g.stock_phrases else {}
-        return guards_mod.Guards(phrases, g.vad_probability, g.repeats, g.stock_phrases, scorer)
-
-    def _handle(self, segment: Segment, recognizer, language, ring, guards, comparison, segments_dir, translation,
-                parts=None) -> None:
-        utterance = ring.push(segment.start_ms(), segment.samples)
-        cut_at = time.monotonic()
-        start, end = segment.start_sample / SAMPLE_RATE, segment.start_sample / SAMPLE_RATE + len(segment.samples) / SAMPLE_RATE
-        log.info("utterance %d: %d ms .. %d ms (%d ms)", utterance.index, segment.start_ms(),
-                 segment.end_ms(), segment.duration_ms())
-        # Logged every time: if the language were lost, Whisper would guess,
-        # be right most of the time, and hide the bug.
-        log.info('  transcribing as "%s" with "%s"', language, self.recognizer_name)
-        try:
-            result = transcribe_parts(recognizer, utterance.pcm, parts, language)
-        except asr_pkg.AsrError as e:
-            log.warning("  transcription failed: %s", e)
-            self.emit(Error(f"utterance {utterance.index}: transcription failed: {e}"))
-            result = None
-        if result is not None:
-            asr_ms = int(result.seconds * 1000)
-            self.stats.audio_seconds += len(utterance.pcm) / SAMPLE_RATE
-            self.stats.asr_seconds += result.seconds
-            verdict = guards.check(result.text, language, utterance.pcm)
-            for reason in verdict.reasons:
-                log.info('  guard: %s: "%s"', reason, result.text)
-            if verdict.dropped:
-                log.info("  dropped: %s", "; ".join(verdict.reasons))
-                self.stats.dropped += 1
-                self.emit(Dropped(utterance.index, result.text, verdict.reasons, start))
-            elif not verdict.text:
-                log.info("  no words recognised in %d ms of audio (%d ms to decide)", utterance.duration_ms(), asr_ms)
-                self.emit(NothingRecognized(utterance.index, utterance.duration_ms(), start))
-            else:
-                log.info("  [%s] %s\n  (%d ms to transcribe %d ms of audio)", language, verdict.text, asr_ms,
-                         utterance.duration_ms())
-                # Words were timed against the recognizer's own text; a guard
-                # that changed the text makes them unreliable.
-                words = result.words if not verdict.changed else None
-                self.emit(Final(utterance.index, verdict.text, language, utterance.duration_ms(), asr_ms,
-                                start, end, words))
-                for sentence in sentences.split(verdict.text, utterance.index, start, end, words):
-                    self.stats.sentences += 1
-                    self.emit(SentenceMsg(sentence.id, sentence.utterance, sentence.text, language,
-                                          sentence.start, sentence.end, sentence.approximate))
-                    if translation is not None:
-                        translation.submit(sentence, language, cut_at)
-        if comparison is not None:
-            table = compare.run_all(comparison, utterance, language, guards)
-            compare.report(table, self.recognizer_name)
-            self.emit(ComparisonMsg(table))
-        if self.options.write_wav:
-            write_segment(utterance, segments_dir)
+        return guards_mod.Guards(phrases, g.vad_probability, g.repeats, g.stock_phrases, scorer,
+                                 g.sparse, g.min_words_per_second, g.sparse_min_seconds)
 
 
 @dataclass
@@ -634,14 +640,14 @@ def trim_and_split(origin: int, length: int, segments: list[Segment], max_part: 
     return (first, last), [(a - first, b - first) for a, b in parts]
 
 
-def transcribe_parts(recognizer, pcm: np.ndarray, parts, language: str) -> asr_pkg.AsrResult:
+def transcribe_parts(recognizer, pcm: np.ndarray, parts, language: str, timestamps: bool = True) -> asr_pkg.AsrResult:
     """Transcribe an utterance, part by part when it has been split, joining
     the texts and shifting each part's word timings onto the utterance."""
     if not parts or len(parts) <= 1:
-        return recognizer.transcribe(pcm, language)
+        return recognizer.transcribe(pcm, language, timestamps)
     texts, words, seconds, timed = [], [], 0.0, True
     for start, end in parts:
-        result = recognizer.transcribe(pcm[start:end], language)
+        result = recognizer.transcribe(pcm[start:end], language, timestamps)
         seconds += result.seconds
         if not result.text.strip():
             continue
@@ -655,6 +661,267 @@ def transcribe_parts(recognizer, pcm: np.ndarray, parts, language: str) -> asr_p
                              language.split("-")[0], seconds)
 
 
+@dataclass
+class _Stream:
+    """An utterance being recognised while it is still being spoken."""
+
+    key: int  # its first sample on the capture timeline
+    index: int  # the utterance index it will have
+    agreement: LocalAgreement
+    began: float  # wall time of its first pass
+    pending: list = field(default_factory=list)  # committed words not yet in a sentence
+    committed_text: str = ""
+    sentences: int = 0
+    last_end: float | None = None  # where the last emitted sentence ended
+    seconds: float = 0.0
+    shown: bool = False  # text has reached the screen
+
+
+class AsrWorker:
+    """Recognition on its own thread: the final pass over each utterance, and
+    provisional passes while streaming. Everything recognised leaves here as
+    sentences, through the fragment holder, to the translator."""
+
+    def __init__(self, pipeline: Pipeline, recognizer, language: str, ring, guards, comparison, segments_dir,
+                 translation, holder: ctx.FragmentHolder, every_pass: bool, source_clock: bool) -> None:
+        self.pipeline, self.recognizer, self.language = pipeline, recognizer, language
+        self.ring, self.guards, self.comparison, self.segments_dir = ring, guards, comparison, segments_dir
+        self.translation, self.holder = translation, holder
+        self.every_pass = every_pass
+        self.source_clock = source_clock
+        # Word timings are for a file's subtitles. Live, nothing uses them, and
+        # for Whisper they cost about a second an utterance.
+        self.words = pipeline.source.lossless
+        self.source_time = 0.0  # set by the pipeline thread
+        # Final passes queue up; a file waits rather than run ahead of them.
+        self.queue: queue.Queue = queue.Queue(4 if pipeline.source.lossless else 0)
+        self._latest = None  # the newest provisional snapshot not yet taken (live)
+        self._lock = threading.Lock()
+        self._stream: _Stream | None = None
+        self._thread = threading.Thread(target=self._run, name="pyvolis-asr", daemon=True)
+        self._thread.start()
+
+    def clock(self) -> float:
+        return self.source_time if self.source_clock else time.monotonic()
+
+    # ---- called from the pipeline thread
+
+    def final(self, segment: Segment, parts=None, speech_seconds=None) -> None:
+        with self._lock:
+            self._latest = None  # a provisional pass over an utterance that has ended is stale
+        self.queue.put(("final", segment, parts, speech_seconds, time.monotonic()))
+
+    def partial(self, snapshot: Segment) -> None:
+        if self.every_pass:
+            self.queue.put(("partial", snapshot))
+        else:
+            with self._lock:
+                self._latest = snapshot  # only the newest is worth transcribing
+
+    def finish(self, wait: bool) -> None:
+        if not wait:
+            with self._lock:
+                self._latest = None
+            while True:
+                try:
+                    self.queue.get_nowait()
+                except queue.Empty:
+                    break
+        self.queue.put(None)
+        self._thread.join()
+
+    # ---- the thread
+
+    def _run(self) -> None:
+        while True:
+            try:
+                job = self.queue.get(timeout=0.05)
+            except queue.Empty:
+                with self._lock:
+                    snapshot, self._latest = self._latest, None
+                job = ("partial", snapshot) if snapshot is not None else "idle"
+            if job is None:
+                break
+            try:
+                if job == "idle":
+                    pass
+                elif job[0] == "partial":
+                    self._partial(job[1])
+                else:
+                    self._final(*job[1:])
+                for ready in self.holder.due(self.clock()):
+                    self._send(*ready)
+            except Exception as e:  # one utterance failing must not end recognition
+                log.exception("recognition failed")
+                self.pipeline.emit(Error(f"recognition failed: {e}"))
+        for ready in self.holder.flush():
+            self._send(*ready)
+
+    def _partial(self, snapshot: Segment) -> None:
+        stream = self._stream
+        if stream is None or stream.key != snapshot.start_sample:
+            stream = self._stream = _Stream(snapshot.start_sample, self.ring.next_index(),
+                                            LocalAgreement(self.recognizer, self.language, self.words),
+                                            time.monotonic())
+        try:
+            update = stream.agreement.update(snapshot.samples)
+        except asr_pkg.AsrError as e:
+            log.warning("  a provisional pass failed: %s", e)
+            return
+        self._count(update.seconds)
+        stream.seconds += update.seconds
+        now_end = (snapshot.start_sample + len(snapshot.samples)) / SAMPLE_RATE
+        self._commit(stream, update, snapshot.start_sample / SAMPLE_RATE, now_end, final=False)
+        self._shown(stream, snapshot, update)
+        self.pipeline.emit(Partial(stream.index, update.provisional, stream.committed_text,
+                                   " ".join(w.text for w, _ in stream.pending)))
+
+    def _shown(self, stream: _Stream, snapshot: Segment, update) -> None:
+        """The first time an utterance has text on the screen: how long after
+        it began (on a paced source, where that means something)."""
+        if stream.shown or not (update.provisional or stream.committed_text):
+            return
+        stream.shown = True
+        if not self.source_clock:
+            heard = (snapshot.start_sample + len(snapshot.samples) - snapshot.detected_sample) / SAMPLE_RATE
+            self.pipeline.stats.first_text_ms.append(int((heard + update.seconds) * 1000))
+
+    def _count(self, seconds: float) -> None:
+        self.pipeline.stats.asr_seconds += seconds
+        self.pipeline.stats.passes += 1
+
+    def _final(self, segment: Segment, parts, speech_seconds, cut_at: float) -> None:
+        pipeline, language = self.pipeline, self.language
+        stream, self._stream = self._stream, None
+        if stream is not None and stream.key != segment.start_sample:
+            stream = None  # a different utterance: its passes don't apply
+        utterance = self.ring.push(segment.start_ms(), segment.samples)
+        start = segment.start_sample / SAMPLE_RATE
+        end = start + len(segment.samples) / SAMPLE_RATE
+        log.info("utterance %d: %d ms .. %d ms (%d ms)", utterance.index, segment.start_ms(),
+                 segment.end_ms(), segment.duration_ms())
+        # Logged every time: if the language were lost, Whisper would guess,
+        # be right most of the time, and hide the bug.
+        log.info('  transcribing as "%s" with "%s"', language, pipeline.recognizer_name)
+        pipeline.stats.audio_seconds += len(utterance.pcm) / SAMPLE_RATE
+        if stream is not None:
+            self._final_streamed(stream, utterance, start, end, cut_at)
+        else:
+            self._final_whole(utterance, parts, speech_seconds, start, end, cut_at)
+        if self.comparison is not None:
+            table = compare.run_all(self.comparison, utterance, language, self.guards)
+            compare.report(table, pipeline.recognizer_name)
+            pipeline.emit(ComparisonMsg(table))
+        if pipeline.options.write_wav:
+            write_segment(utterance, self.segments_dir)
+
+    def _final_whole(self, utterance, parts, speech_seconds, start: float, end: float, cut_at: float) -> None:
+        """One pass over a finished utterance: Rust's behaviour."""
+        pipeline, language = self.pipeline, self.language
+        try:
+            result = transcribe_parts(self.recognizer, utterance.pcm, parts, language, self.words)
+        except asr_pkg.AsrError as e:
+            log.warning("  transcription failed: %s", e)
+            pipeline.emit(Error(f"utterance {utterance.index}: transcription failed: {e}"))
+            return
+        asr_ms = int(result.seconds * 1000)
+        self._count(result.seconds)
+        verdict = self.guards.check(result.text, language, utterance.pcm, speech_seconds)
+        for reason in verdict.reasons:
+            log.info('  guard: %s: "%s"', reason, result.text)
+        if verdict.dropped:
+            log.info("  dropped: %s", "; ".join(verdict.reasons))
+            pipeline.stats.dropped += 1
+            pipeline.emit(Dropped(utterance.index, result.text, verdict.reasons, start))
+        elif not verdict.text:
+            log.info("  no words recognised in %d ms of audio (%d ms to decide)", utterance.duration_ms(), asr_ms)
+            pipeline.emit(NothingRecognized(utterance.index, utterance.duration_ms(), start))
+        else:
+            log.info("  [%s] %s\n  (%d ms to transcribe %d ms of audio)", language, verdict.text, asr_ms,
+                     utterance.duration_ms())
+            # Words were timed against the recognizer's own text; a guard
+            # that changed the text makes them unreliable.
+            words = result.words if not verdict.changed else None
+            pipeline.emit(Final(utterance.index, verdict.text, language, utterance.duration_ms(), asr_ms,
+                                start, end, words))
+            for sentence in sentences.split(verdict.text, utterance.index, start, end, words):
+                self._release(sentence, cut_at)
+
+    def _final_streamed(self, stream: _Stream, utterance, start: float, end: float, cut_at: float) -> None:
+        """The last pass of an utterance that was recognised as it was spoken:
+        whatever is not yet committed is committed now."""
+        pipeline, language = self.pipeline, self.language
+        try:
+            update = stream.agreement.finish(utterance.pcm)
+        except asr_pkg.AsrError as e:
+            log.warning("  transcription failed: %s", e)
+            pipeline.emit(Error(f"utterance {utterance.index}: transcription failed: {e}"))
+            return
+        self._count(update.seconds)
+        stream.seconds += update.seconds
+        self._commit(stream, update, start, end, final=True, cut_at=cut_at)
+        text = stream.committed_text
+        log.info("  [%s] %s\n  (%d passes, %d ms in all, to transcribe %d ms of audio)", language, text,
+                 stream.agreement.passes, stream.seconds * 1000, utterance.duration_ms())
+        if stream.sentences == 0:
+            pipeline.emit(NothingRecognized(utterance.index, utterance.duration_ms(), start))
+        else:
+            pipeline.emit(Final(utterance.index, text, language, utterance.duration_ms(),
+                                int(stream.seconds * 1000), start, end, None))
+
+    def _commit(self, stream: _Stream, update, start: float, now_end: float, final: bool, cut_at: float = 0.0) -> None:
+        """Newly committed words join the pending ones; every complete
+        sentence among them goes on its way (all of them when `final`)."""
+        if not update.committed and not final:
+            return
+        stream.pending.extend((w, update.timed) for w in update.committed)
+        if update.committed:
+            stream.committed_text = (stream.committed_text + " " + update.text).strip()
+        text = " ".join(w.text for w, _ in stream.pending)
+        pieces = sentences.split_text(text)
+        if not final and pieces and not pieces[-1].rstrip("\"'»”’)]").endswith(sentences.SENTENCE_END):
+            pieces = pieces[:-1]  # the last one isn't finished yet
+        for piece in pieces:
+            count = len(piece.split())
+            taken, stream.pending = stream.pending[:count], stream.pending[count:]
+            timed = all(t for _, t in taken)
+            if timed:
+                s_start, s_end = start + taken[0][0].start, start + taken[-1][0].end
+            else:
+                # No word timings: from where the last sentence ended to the
+                # audio heard so far.
+                s_start, s_end = (stream.last_end if stream.last_end is not None else start), now_end
+            stream.last_end = s_end
+            # The audio-based guards need the whole utterance; here, the text ones.
+            verdict = self.guards.check(piece, self.language)
+            if verdict.dropped or not verdict.text:
+                log.info("  dropped: %s: %s", "; ".join(verdict.reasons), piece)
+                self.pipeline.stats.dropped += 1
+                self.pipeline.emit(Dropped(stream.index, piece, verdict.reasons, s_start))
+                continue
+            stream.sentences += 1
+            sentence = sentences.Sentence(f"{stream.index}.{stream.sentences}", stream.index, verdict.text,
+                                          round(s_start, 3), round(s_end, 3), not timed)
+            self._release(sentence, cut_at or time.monotonic())
+
+    def _release(self, sentence, cut_at: float) -> None:
+        """A committed sentence: straight on, or held if it is a fragment."""
+        ready, held = self.holder.offer(sentence, self.language, self.clock(), cut_at)
+        if held is not None:
+            self.pipeline.stats.held += 1
+            log.info("  holding the fragment %r to join it to what follows", held.text)
+            self.pipeline.emit(Held(held.id, held.text))
+        for item in ready:
+            self._send(*item)
+
+    def _send(self, sentence, source: str, cut_at: float) -> None:
+        self.pipeline.stats.sentences += 1
+        self.pipeline.emit(SentenceMsg(sentence.id, sentence.utterance, sentence.text, source,
+                                       sentence.start, sentence.end, sentence.approximate))
+        if self.translation is not None:
+            self.translation.submit(sentence, source, cut_at)
+
+
 class TranslationThread:
     """Rust's spawn_translator: its own thread, a small queue."""
 
@@ -663,6 +930,11 @@ class TranslationThread:
         self.translator = translator
         self.target = target
         self.speaker = speaker
+        py = pipeline.pyconfig.context
+        mode = pipeline.options.context if pipeline.options.context is not None else py.mode
+        # Carry-forward: each sentence is translated knowing what came before.
+        self.history = ctx.History(py.sentences if mode == "carry" else 0, py.token_budget)
+        self._count = getattr(translator, "count_tokens", lambda text: len(text) // 3)
         self.queue: queue.Queue = queue.Queue(TRANSLATION_QUEUE)
         self._thread = threading.Thread(target=self._run, name="pyvolis-translate", daemon=True)
         self._thread.start()
@@ -700,8 +972,10 @@ class TranslationThread:
         stats, emit = self.pipeline.stats, self.pipeline.emit
         while (job := self.queue.get()) is not None:
             sentence, source, cut_at = job
+            request = tr.TranslationRequest(sentence.text, source, self.target,
+                                            self.history.context(self._count), list(self.pipeline.glossary))
             try:
-                result = self.translator.translate(tr.TranslationRequest(sentence.text, source, self.target))
+                result = self.translator.translate(request)
             except tr.Refused as e:
                 log.warning("sentence %s: translation refused (%s): %s", sentence.id, e.guard, e)
                 stats.not_translated += 1
@@ -717,6 +991,7 @@ class TranslationThread:
                 emit(NotTranslated(sentence.id, "the translation came back empty"))
                 continue
             ms = int(result.seconds * 1000)
+            self.history.add(sentence.text, result.text)
             stats.translated += 1
             stats.translate_ms.append(ms)
             log.info("sentence %s\n  [%s] %s\n  [%s] %s\n  (%d ms to translate on the %s)", sentence.id, source,

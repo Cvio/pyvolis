@@ -101,3 +101,42 @@ def test_file_mode_speaks_only_when_asked_and_never_saves_that(window):
     window.source_file.setChecked(True)
     assert not window.speak.isChecked(), "a file: off by default"
     assert window.config.tts.enabled, "and the saved setting is untouched"
+
+
+def test_provisional_text_is_drawn_lighter_below_the_committed_rows(window):
+    feed(window, ev.SentenceMsg("1.1", 1, "Se me murió el perro.", "es", 0.0, 2.0),
+         ev.Partial(1, "ayer por la", committed="Se me murió el perro. Fue", pending="Fue"))
+    assert window.table.rowCount() == 2
+    label = window.table.cellWidget(1, 1)
+    assert "Fue" in label.text() and "<i>ayer por la</i>" in label.text() and "color:" in label.text()
+    feed(window, ev.Final(1, "Se me murió el perro. Fue ayer.", "es", 4000, 900, 0.0, 4.0),
+         ev.SentenceMsg("1.2", 1, "Fue ayer.", "es", 2.0, 4.0))
+    assert window.table.rowCount() == 2 and window.table.cellWidget(1, 1) is None
+    assert cells(window, 1)[1] == "Fue ayer."
+
+
+def test_a_held_fragment_is_shown_waiting(window):
+    feed(window, ev.Held("1.1", "Yo manejo"))
+    assert "held" in cells(window, 0)[3]
+    feed(window, ev.SentenceMsg("1.1", 1, "Yo manejo Mi carro está aquí.", "es", 0.0, 3.0))
+    assert cells(window, 0)[1] == "Yo manejo Mi carro está aquí." and "held" not in cells(window, 0)[3]
+
+
+def test_the_glossary_reaches_a_running_pipeline(window):
+    got = []
+
+    class FakePipeline:
+        def set_glossary(self, terms):
+            got.append(terms)
+
+        def stop(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    window.pipeline = FakePipeline()
+    window.glossary.setText("Susie Wolff, Bellas Artes")
+    window.glossary_changed()
+    window.pipeline = None
+    assert got == [["Susie Wolff", "Bellas Artes"]]

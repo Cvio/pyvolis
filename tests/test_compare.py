@@ -32,7 +32,7 @@ class Fake:
     def __init__(self, name, reply="", fail=False):
         self.name, self.reply, self.fail = name, reply, fail
 
-    def transcribe(self, audio, language):
+    def transcribe(self, audio, language, timestamps=True):
         if self.fail:
             raise AsrError("no model loaded")
         return AsrResult(self.reply)

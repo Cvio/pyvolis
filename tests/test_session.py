@@ -168,3 +168,39 @@ def test_file_progress_stats_and_stalls_are_kept():
     s.apply(ev.Summary({"asr_rtf": 0.2}))
     assert s.progress == (12.0, 120.0) and s.worst_stall_ms == 180 and s.stats == {"asr_rtf": 0.2}
     assert ses.clock(75) == "1:15" and ses.clock(3675) == "1:01:15"
+
+
+# ---------------------------------------------------------------- P7: streaming and fragments
+
+
+def test_provisional_text_is_kept_apart_from_what_is_committed():
+    s = Session()
+    s.apply(ev.Partial(1, "murió el", committed="Se me", pending="Se me"))
+    assert s.provisional == (1, "Se me", "murió el")
+    assert s.rows() == [], "nothing provisional is a row"
+    s.apply(ev.SentenceMsg("1.1", 1, "Se me murió el perro.", "es", 0.0, 2.0))
+    s.apply(ev.Partial(1, "Fue", committed="Se me murió el perro.", pending=""))
+    assert [r.source for r in s.rows()] == ["Se me murió el perro."] and s.provisional == (1, "", "Fue")
+    s.apply(ev.Final(1, "Se me murió el perro. Fue ayer.", "es", 4000, 900, 0.0, 4.0))
+    assert s.provisional is None, "the utterance has ended: nothing provisional is left"
+    assert s.rows()[0].asr_ms == 900, "sentences committed while it was spoken get the utterance's timings"
+
+
+def test_a_held_fragment_is_shown_waiting_then_becomes_the_joined_sentence():
+    s = Session()
+    s.begin("es", "en", False, False)
+    s.apply(ev.Held("1.1", "Yo manejo"))
+    [row] = s.rows()
+    assert row.held and row.source == "Yo manejo"
+    s.apply(ev.SentenceMsg("1.1", 1, "Yo manejo Mi carro está aquí.", "es", 0.0, 3.0))
+    [row] = s.rows()
+    assert not row.held and row.source == "Yo manejo Mi carro está aquí." and row.end == 3.0
+    s.apply(ev.Translated("1.1", "I'll drive. My car is here.", "en", 500, "cpu", "qwen"))
+    assert s.rows()[0].target == "I'll drive. My car is here."
+
+
+def test_stopping_clears_provisional_text():
+    s = Session()
+    s.apply(ev.Partial(3, "hola"))
+    s.apply(ev.Stopped())
+    assert s.provisional is None

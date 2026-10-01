@@ -1,6 +1,6 @@
 # Handoff: where pyvolis stands
 
-Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
+Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
 
 ## Status
 
@@ -35,7 +35,11 @@ Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   and hold styles; the microphone device closed between turns; a turn as one utterance, trimmed
   of silence and split at pauses past 25 s; the three-state indicator. Checked against real
   devices by `scripts/turn_check.py` (15 of 15).
-- Next: P7 (streaming recognition and carry-forward context). Wait for the go-ahead.
+- **P7 done:** streaming recognition with LocalAgreement (`asr/streaming.py`), provisional
+  text in the window, carry-forward context and the session glossary (`translate/context.py`),
+  fragment holding, and a fourth hallucination guard (sparse text). Measured by
+  `scripts/p7_check.py`; numbers under "P7 findings".
+- Next: P8 (revision mode). Wait for the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -154,6 +158,72 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     equivalent of Rust removing the key from egui's input before any widget runs.
     `[mode].turn_key` keeps egui's key names, since the file is shared.
 32. **`mode.kind = "shared"`** isn't built until P10: a live run then takes turns and says so.
+33. **Recognition has its own thread** (`AsrWorker`). The pipeline thread now only runs the VAD
+    and hands work over, so a slow recognition pass never delays the cutting of speech. Final
+    passes take priority over provisional ones, and a provisional pass that is already out of
+    date when its turn comes is skipped.
+34. **Streaming recognition** (`[asr] streaming`, off by default; Rust has none). While an
+    utterance is spoken its audio so far is transcribed again every `interval_s` (the first
+    time after half of that); words two passes in a row agree on are committed, whole committed
+    sentences are translated at once, and the rest is shown as provisional text. It works in
+    continuous mode and file mode only: a turn is recognised once, when it ends, as before.
+    The final pass at the end of the utterance still decides the text.
+35. **Word timestamps are asked for only where they are used.** They cost Whisper about 1 s a
+    pass. A file run's final pass has them (for the subtitles and the timeline); a live run's
+    doesn't; streaming passes have them once the buffer is 10 s or longer, to trim what is
+    already committed. Without them a sentence's times are shared out by length and marked
+    approximate.
+36. **Carry-forward context** (`[context] mode = "carry"`, the default; Rust translates each
+    utterance alone). The last 4 sentences and their translations go into the prompt as earlier
+    turns of the chat, within 400 tokens. With `mode = "off"` the prompt is byte for byte
+    Rust's, and that is what `parity/translate.py` compares.
+37. **Context leaves half at a time.** When there are more than `sentences` turns the oldest
+    half is dropped together, so consecutive prompts start the same way, and the translator
+    keeps what it already evaluated (`LlamaTranslator.run(prompt, reuse=True)` compares token
+    prefixes). Same outputs; about 0.7 s a sentence instead of 1.7 s on this CPU. Without
+    context every sentence starts from a cleared cache, as in Rust.
+38. **The glossary** is one sentence added to the system text ("Keep these names and terms
+    exactly: ..."), per session and not saved. The "recites the prompt" guard knows that
+    sentence and the context turns too.
+39. **Fragment holding** (`[fragments]`, on by default). A sentence of fewer than 4 words with
+    no final punctuation waits up to 1.5 s to be joined to the next one before it is
+    translated. The clock is the wall for the microphone and the file's own time for a fast
+    file run, so both give the same result.
+40. **A fourth hallucination guard, "sparse":** fewer than one word per 3 s over 3 s or more of
+    detected speech. My choice, as the user asked me to use my judgement: it catches the
+    one- or two-word outputs Whisper gives for long noise, which the other three let through.
+    `[guards] sparse = false` turns it off.
+
+## P7 findings
+
+- `scripts/p7_check.py` on the Spanish fixture file (124 s, 14 sentences), Qwen3 1.7B on CPU.
+  With whisper-large-v3-turbo-es:
+
+  | | CER | WER | chrF | ASR RTF | translate / sentence |
+  |---|---|---|---|---|---|
+  | everything off | 0.9% | 3.0% | 58.4 | 0.34 | 2459 ms |
+  | + context | 0.9% | 3.0% | 59.3 | 0.34 | 2424 ms |
+  | + fragment holding | 0.9% | 3.0% | 59.3 | 0.34 | (0 held) |
+  | + streaming, fast | 1.0% | 3.4% | 59.4 | 0.70 (97 passes) | |
+  | + streaming, real time | 0.9% | | 59.7 | 0.63 | first text after 1223 ms |
+
+  With mms-1b-all (no punctuation, so the file is 14 utterances treated as sentences): CER
+  1.3 to 1.4%, WER 6.0%, chrF 58.6 without context, 59.6 with, 59.9 with streaming; one
+  fragment held and joined; ASR RTF 0.04 without streaming, 0.12 with.
+- So on read speech: context is worth about 1 chrF and costs nothing once the cache is reused;
+  streaming doubles the recognition work (still well under real time on the GPU) and leaves
+  accuracy where it was; holding rarely fires, because Whisper punctuates almost everything.
+  FLEURS sentences are unrelated to each other, so this understates what context does in a
+  conversation.
+- Context cases (`p7_check.py`, and tests in `tests/test_translate.py`): "Me lo entregan el
+  martes" alone is "I give it to them on Tuesday", after a sentence about an order it is "I get
+  it on Tuesday"; "No la he visto" gets "her" after a sentence about a sister. **Not fixed:**
+  "Yo manejo." followed by "Mi carro está aquí." is still "I manage.", because what would
+  settle it comes afterwards. That is what P8's revision is for.
+- Provisional text first appears 1.2 s after speech starts (the build file asks for about
+  1.5 s): half an interval, plus one Whisper pass.
+- The first try at context doubled translation time (the whole prompt evaluated for every
+  sentence). Differences 35 and 37 are the fixes.
 
 ## P6 findings
 

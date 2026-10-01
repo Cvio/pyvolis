@@ -102,6 +102,7 @@ class Shared:
 ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("mode", "kind"): ("continuous", "turn", "shared"),
     ("mode", "turn_style"): ("toggle", "hold"),
+    ("context", "mode"): ("off", "carry"),  # pyvolis.toml
 }
 
 
@@ -219,6 +220,36 @@ class PyGuards:
     min_peak_probability: float = 0.8
     repeats: bool = True
     stock_phrases: bool = True
+    # Too few words for the speech detected (noise shaped like speech).
+    sparse: bool = True
+    min_words_per_second: float = 0.33
+    sparse_min_seconds: float = 3.0
+
+
+@dataclass
+class PyAsr:
+    # Streaming recognition (LocalAgreement): provisional text while speech
+    # goes on. Off for now: segment mode is the default until streaming is proven.
+    streaming: bool = False
+    # Seconds between passes over the growing utterance.
+    interval_s: float = 1.0
+
+
+@dataclass
+class PyContext:
+    # "carry": translate each sentence with the earlier ones as context.
+    # "off": each sentence alone. ("revision" arrives at P8.)
+    mode: str = "carry"
+    sentences: int = 4  # how many earlier sentences, at most
+    token_budget: int = 400  # and never more than this many tokens of them
+
+
+@dataclass
+class PyFragments:
+    # Hold a short sentence with no final punctuation and join it to the next.
+    hold: bool = True
+    min_words: int = 4  # shorter than this is a fragment
+    hold_ms: int = 1500
 
 
 @dataclass
@@ -243,6 +274,9 @@ class PyvolisConfig:
     vad: PyVad = field(default_factory=PyVad)
     guards: PyGuards = field(default_factory=PyGuards)
     translate: PyTranslate = field(default_factory=PyTranslate)
+    asr: PyAsr = field(default_factory=PyAsr)
+    context: PyContext = field(default_factory=PyContext)
+    fragments: PyFragments = field(default_factory=PyFragments)
 
     @classmethod
     def load(cls, path: Path) -> tuple[PyvolisConfig, bool]:
@@ -288,6 +322,9 @@ def save_pyvolis_selections(path: Path, pyconfig: PyvolisConfig) -> None:
         raise ConfigError(f"failed to parse {path.absolute()}; not overwriting it: {e}") from e
     _set(doc, "translate", "model", pyconfig.translate.model)
     _set(doc, "translate", "prompt", pyconfig.translate.prompt)
+    _set(doc, "asr", "streaming", pyconfig.asr.streaming)
+    _set(doc, "context", "mode", pyconfig.context.mode)
+    _set(doc, "fragments", "hold", pyconfig.fragments.hold)
     try:
         path.write_text(tomlkit.dumps(doc), encoding="utf-8", newline="")
     except OSError as e:

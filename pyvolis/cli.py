@@ -51,6 +51,11 @@ OPTIONS FOR --file (and --from, --to, --mt, --prompt as above):
     --fast              As fast as the models allow (default: real time)
     --export <DIR>      Where to write (default: exports\\<file>-<date>\\)
     --no-translate      Transcribe only
+    --streaming         Recognise while the speech goes on (provisional text,
+                        committed as two passes agree); --no-streaming forces it off
+    --context <MODE>    "carry" (earlier sentences as context) or "off"
+    --no-hold           Don't hold short fragments to join them to what follows
+    --glossary <TERMS>  Names and terms to keep exactly, separated by commas
 
     -h, --help          Show this message
 
@@ -80,6 +85,10 @@ class Command:
     export: str = ""
     translate: bool = True
     load: bool = False  # --report --load
+    streaming: bool | None = None  # --file: None = pyvolis.toml
+    context: str = ""
+    hold: bool | None = None
+    glossary: str = ""
 
 
 def parse(args: list[str]) -> Command:
@@ -131,8 +140,10 @@ def parse(args: list[str]) -> Command:
     if first == "--file":
         if not rest or rest[0].startswith("--"):
             raise UsageError("--file needs the path of an audio file")
-        values = {"--from": "", "--to": "", "--mt": "", "--prompt": "", "--asr": "", "--export": ""}
-        flags = {"--fast": False, "--no-translate": False}
+        values = {"--from": "", "--to": "", "--mt": "", "--prompt": "", "--asr": "", "--export": "",
+                  "--context": "", "--glossary": ""}
+        flags = {"--fast": False, "--no-translate": False, "--streaming": False, "--no-streaming": False,
+                 "--no-hold": False}
         options = iter(rest[1:])
         for arg in options:
             if arg in flags:
@@ -144,9 +155,14 @@ def parse(args: list[str]) -> Command:
             if value is None:
                 raise UsageError(f"{arg} needs a value")
             values[arg] = value
+        if values["--context"] not in ("", "off", "carry"):
+            raise UsageError(f'--context "{values["--context"]}" is not "off" or "carry"')
+        streaming = True if flags["--streaming"] else False if flags["--no-streaming"] else None
         return Command("file", path=rest[0], source=values["--from"], target=values["--to"], mt=values["--mt"],
                        prompt=values["--prompt"], asr=values["--asr"], export=values["--export"],
-                       fast=flags["--fast"], translate=not flags["--no-translate"])
+                       fast=flags["--fast"], translate=not flags["--no-translate"], streaming=streaming,
+                       context=values["--context"], hold=False if flags["--no-hold"] else None,
+                       glossary=values["--glossary"])
     raise _unknown(first)
 
 
@@ -204,6 +220,7 @@ def run(args: list[str], root: Path) -> int:
         return run_file(root, config, FileRun(
             Path(command.path), command.source, command.target, command.asr, command.mt, command.prompt,
             command.fast, Path(command.export) if command.export else None, command.translate,
+            command.streaming, command.context or None, command.hold, command.glossary,
         ))
     return run_report(root, config, command.load)
 

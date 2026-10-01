@@ -19,7 +19,9 @@ from pathlib import Path
 
 from . import export, paths, scoring
 from .config import Config, ConfigError, PyvolisConfig
-from .events import Error, Final, NotTranslated, Progress, SentenceMsg, Stall, Summary, Translated, restart_clock
+from .events import (
+    Error, Final, Held, NotTranslated, Progress, SentenceMsg, Stall, Summary, Translated, restart_clock,
+)
 from .filesource import FileSourceError, read_16k_mono
 from .pipeline import ArraySource, Options, Pipeline, run_to_end
 
@@ -37,6 +39,10 @@ class FileRun:
     fast: bool = False
     export: Path | None = None
     translate: bool = True
+    streaming: bool | None = None
+    context: str | None = None
+    hold: bool | None = None
+    glossary: str = ""
 
 
 def run(root: Path, config: Config, job: FileRun) -> int:
@@ -68,7 +74,10 @@ def run(root: Path, config: Config, job: FileRun) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    options = Options(translate=job.translate, asr=job.asr, mt=job.mt, prompt=job.prompt)
+    from .translate.context import parse_glossary
+
+    options = Options(translate=job.translate, asr=job.asr, mt=job.mt, prompt=job.prompt, streaming=job.streaming,
+                      context=job.context, hold=job.hold, glossary=parse_glossary(job.glossary))
     source = ArraySource(audio, realtime=not job.fast)
     print(f"{job.path.absolute()}: {source.duration:.1f} s, {languages.source} -> {languages.target}, "
           f"{'fast' if job.fast else 'real time'}")
@@ -117,6 +126,8 @@ def _show(event) -> None:
         print(f"error: {event.message}", flush=True)
     elif isinstance(event, Stall):
         log.warning("the pipeline's threads were held up for %d ms", event.late_ms)
+    elif isinstance(event, Held):
+        print(f"{'':10} {event.id:>6} held: {event.text}", flush=True)
     elif isinstance(event, Progress) and event.position >= event.duration:
         print(f"{'':10} end of file ({event.duration:.1f} s)", flush=True)
 
@@ -133,6 +144,8 @@ def status_line(stats: dict) -> str:
         f"sentences {stats.get('sentences', 0)} | not translated {stats.get('not_translated', 0)} | "
         f"revisions {stats.get('revisions', 0)} | dropped hallucinations {stats.get('dropped', 0)} | "
         f"worst stall {ms(stats.get('worst_stall_ms'))}"
+        + (f" | first text after {ms(stats.get('first_text_ms_median'))}" if stats.get("first_text_ms_median") else "")
+        + (f" | fragments held {stats['fragments_held']}" if stats.get("fragments_held") else "")
     )
 
 

@@ -38,6 +38,11 @@ class UtteranceRing:
         self._items.append(utterance)
         return utterance
 
+    def next_index(self) -> int:
+        """The index the next utterance will have (streaming names an
+        utterance before it has ended)."""
+        return self._captured + 1
+
     def recent(self) -> list[Utterance]:
         """Newest first."""
         return list(reversed(self._items))

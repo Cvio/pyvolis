@@ -47,6 +47,7 @@ class Row:
     revised: bool = False
     history: list[str] = field(default_factory=list)  # earlier translations (P8)
     approximate: bool = False  # times shared out by length
+    held: bool = False  # a fragment waiting to be joined to what follows
 
     kind = "row"
 
@@ -106,6 +107,9 @@ class Session:
         self.stats: dict = {}
         self.worst_stall_ms = 0
         self._utterances: dict[int, tuple[int, int]] = {}  # index -> speech_ms, asr_ms
+        # Streaming: the utterance being spoken, as (utterance, committed words
+        # that aren't a sentence yet, provisional text). None when nothing is.
+        self.provisional: tuple[int, str, str] | None = None
         self.mode: str | None = None  # what the pipeline says it is in; None until it has said
         self.turn = IDLE
         # A turn's sentences still on their way: to be translated, to be spoken.
@@ -134,6 +138,7 @@ class Session:
         self._untranslated, self._unspoken, self._recognised = set(), set(), False
 
     def clear(self) -> None:
+        self.provisional = None
         self.lines = []
         self._utterances = {}
 
@@ -198,14 +203,30 @@ class Session:
             self.level_db, self.has_level = event.db, True
         elif isinstance(event, ev.Progress):
             self.progress = (event.position, event.duration)
+        elif isinstance(event, ev.Partial):
+            self.provisional = (event.utterance, event.pending, event.text)
         elif isinstance(event, ev.Final):
             self._utterances[event.index] = (event.speech_ms, event.asr_ms)
+            self._end_provisional(event.index)
+            for row in self.rows():  # sentences committed while it was still being spoken
+                if row.utterance == event.index:
+                    row.speech_ms, row.asr_ms = event.speech_ms, event.asr_ms
+        elif isinstance(event, ev.Held):
+            utterance = int(event.id.split(".")[0])
+            self._push(Row(event.id, utterance, 0.0, 0.0, self.languages[0], self.languages[1], event.text,
+                           held=True))
         elif isinstance(event, ev.SentenceMsg):
             speech_ms, asr_ms = self._utterances.get(event.utterance, (0, 0))
-            self._push(Row(event.id, event.utterance, event.start, event.end, event.lang,
-                           # Until the translation says what it is in.
-                           self.languages[1], event.text, speech_ms=speech_ms, asr_ms=asr_ms,
-                           approximate=event.approximate))
+            held = self.row(event.id)
+            if held is not None and held.held:
+                # The fragment that was waiting, now joined to what followed.
+                held.source, held.start, held.end, held.held = event.text, event.start, event.end, False
+                held.source_lang, held.approximate = event.lang, event.approximate
+            else:
+                self._push(Row(event.id, event.utterance, event.start, event.end, event.lang,
+                               # Until the translation says what it is in.
+                               self.languages[1], event.text, speech_ms=speech_ms, asr_ms=asr_ms,
+                               approximate=event.approximate))
         elif isinstance(event, ev.Translated):
             if (row := self.row(event.id)) is not None:
                 row.target, row.target_lang, row.translate_ms = event.text, event.lang, event.translate_ms
@@ -218,6 +239,7 @@ class Session:
                 row.history.append(event.old)
                 row.target, row.revised = event.new, True
         elif isinstance(event, ev.NothingRecognized):
+            self._end_provisional(event.index)
             self._push(Nothing(event.index, event.speech_ms, event.start))
         elif isinstance(event, ev.Dropped):
             self._push(DroppedLine(event.index, event.text, event.reasons, event.start))
@@ -240,7 +262,12 @@ class Session:
             self.speaking = False
             self.level_db, self.has_level = None, False
             self.mode = None
+            self.provisional = None
             self._reset_turn()
+
+    def _end_provisional(self, utterance: int) -> None:
+        if self.provisional is not None and self.provisional[0] <= utterance:
+            self.provisional = None
 
     def row(self, sentence_id: str) -> Row | None:
         for line in reversed(self.lines):

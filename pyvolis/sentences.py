@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from .asr import Word
 
+SENTENCE_END = (".", "?", "!", "…", "؟")
 # A sentence ends at one or more of these, then closing quotes or brackets.
 _END = re.compile(r"[.?!…؟]+[\"'»”’)\]]*(?=\s|$)")
 # A full stop after these is not the end of a sentence.

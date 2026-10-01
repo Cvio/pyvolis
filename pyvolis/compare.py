@@ -109,7 +109,7 @@ def run_all(engines: Engines, utterance: Utterance, language: str, guards=None) 
             continue
         began = time.perf_counter()
         try:
-            result = recognizer.transcribe(utterance.pcm, language)
+            result = recognizer.transcribe(utterance.pcm, language, False)  # timings aren't compared
         except asr_pkg.AsrError as e:
             comparison.runs.append(Run(name, str(e), int((time.perf_counter() - began) * 1000), False))
             continue

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from html import escape
 import queue
 import threading
 from pathlib import Path
@@ -25,6 +26,7 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+    QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QRadioButton, QStyledItemDelegate, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -35,6 +37,7 @@ from ..audio import SAMPLE_RATE
 from ..config import Config, ConfigError, PyvolisConfig, save_pyvolis_selections
 from ..filesource import FileSourceError, read_16k_mono
 from ..pipeline import CONTINUOUS, TURN, ArraySource, Collected, Options, Pipeline
+from ..translate.context import parse_glossary
 from . import session as ses
 
 log = logging.getLogger(__name__)
@@ -220,6 +223,14 @@ class MainWindow(QMainWindow):
         self.half_duplex = QCheckBox("Half-duplex (mute the microphone while speaking)")
         self.half_duplex.setToolTip("Turn off only when using headphones: with speakers, pyvolis would hear itself.")
         self.compare = QCheckBox("Compare recognizers (no translation or speech)")
+        self.streaming = QCheckBox("Show text while speaking (streaming)")
+        self.streaming.setToolTip("Transcribes the growing utterance every second; words two passes agree on are "
+                                  "committed, the rest is shown lighter and may change. Costs more recognition.")
+        self.use_context = QCheckBox("Translate with the earlier sentences as context")
+        self.hold_fragments = QCheckBox("Join short fragments to what follows")
+        self.glossary = QLineEdit()
+        self.glossary.setPlaceholderText("Names and terms to keep exactly, separated by commas")
+        self.glossary.editingFinished.connect(self.glossary_changed)
         self.mode_turn = QRadioButton("Take turns")
         self.mode_continuous = QRadioButton("Listen continuously")
         key = self.config.mode.turn_key
@@ -247,6 +258,10 @@ class MainWindow(QMainWindow):
         form.addRow(self.speak)
         form.addRow(self.half_duplex)
         form.addRow(self.compare)
+        form.addRow(self.streaming)
+        form.addRow(self.use_context)
+        form.addRow(self.hold_fragments)
+        form.addRow("Glossary", self.glossary)
         self.memory = QLabel()
         self.memory.setWordWrap(True)
         form.addRow(self.memory)
@@ -257,7 +272,9 @@ class MainWindow(QMainWindow):
         # The mode, unlike every other setting, can change while running.
         self.locked_while_running = [self.source_lang, self.target_lang, self.recognizer, self.translator,
                                      self.input_device, self.output_device, self.speak, self.half_duplex,
-                                     self.compare]
+                                     self.compare, self.streaming, self.use_context, self.hold_fragments]
+        for widget in (self.streaming, self.use_context, self.hold_fragments):
+            widget.toggled.connect(self.save)
         for widget in (self.mode_turn, self.mode_continuous, self.style_toggle, self.style_hold):
             widget.toggled.connect(self.mode_controls_changed)
         for combo in (self.source_lang, self.target_lang):
@@ -347,6 +364,9 @@ class MainWindow(QMainWindow):
             _select(combo, chosen)
         self.speak.setChecked(self.config.tts.enabled)
         self.half_duplex.setChecked(self.config.tts.half_duplex)
+        self.streaming.setChecked(self.pyconfig.asr.streaming)
+        self.use_context.setChecked(self.pyconfig.context.mode == "carry")
+        self.hold_fragments.setChecked(self.pyconfig.fragments.hold)
         (self.mode_continuous if self.config.mode.kind == CONTINUOUS else self.mode_turn).setChecked(True)
         (self.style_hold if self.config.mode.turn_style == "hold" else self.style_toggle).setChecked(True)
         self._filling = False
@@ -394,6 +414,12 @@ class MainWindow(QMainWindow):
             self.pipeline.set_mode(kind)
         self.save()
         self.refresh()
+
+    def glossary_changed(self) -> None:
+        """The glossary applies from the next sentence, even mid-run. It is
+        the session's, and isn't saved."""
+        if self.pipeline is not None:
+            self.pipeline.set_glossary(parse_glossary(self.glossary.text()))
 
     def turn_key_active(self) -> bool:
         """Whether the turn key is ours right now: a live run, taking turns."""
@@ -445,6 +471,9 @@ class MainWindow(QMainWindow):
             c.tts.enabled = self.speak.isChecked()
         c.tts.half_duplex = self.half_duplex.isChecked()
         self.pyconfig.translate.model = self.translator.currentData() or ""
+        self.pyconfig.asr.streaming = self.streaming.isChecked()
+        self.pyconfig.context.mode = "carry" if self.use_context.isChecked() else "off"
+        self.pyconfig.fragments.hold = self.hold_fragments.isChecked()
         try:
             c.save_selections(paths.config_file(self.root))
             save_pyvolis_selections(paths.pyvolis_config_file(self.root), self.pyconfig)
@@ -476,7 +505,8 @@ class MainWindow(QMainWindow):
         ev.restart_clock()
         self.events = queue.Queue()
         self.options = Options(compare=comparing, translate=not comparing, speak=speak,
-                               mt=self.translator.currentData() or "")
+                               mt=self.translator.currentData() or "",
+                               glossary=parse_glossary(self.glossary.text()))
         self.pipeline = Pipeline(self.root, dataclasses.replace(self.config), self.options, self.events, source,
                                  self.pyconfig).start()
 
@@ -704,10 +734,15 @@ class MainWindow(QMainWindow):
             self.table.setRowCount(0)
             self._drawn = 0
         at_bottom = self.table.verticalScrollBar().value() >= self.table.verticalScrollBar().maximum() - 4
-        self.table.setRowCount(len(lines))
+        provisional = self.session.provisional
+        self.table.setRowCount(len(lines) + (1 if provisional else 0))
         self._changed = set()
         for index, line in enumerate(lines):
+            if self.table.cellWidget(index, 1) is not None:  # was the provisional row
+                self.table.removeCellWidget(index, 1)
             self._draw(index, line)
+        if provisional:
+            self._draw_provisional(len(lines), provisional)
         # A row grows when its translation arrives, not only when it is new.
         for index in self._changed:
             self.table.resizeRowToContents(index)
@@ -715,8 +750,34 @@ class MainWindow(QMainWindow):
             self.table.scrollToBottom()
         self._drawn = len(lines)
 
+    def _draw_provisional(self, index: int, provisional) -> None:
+        """The utterance being spoken: committed words in normal text, the
+        current guess after them in a lighter style."""
+        _utterance, pending, guess = provisional
+        self._set(index, ["...", "", "", "listening"], muted=True)
+        label = self.table.cellWidget(index, 1)
+        if label is None:
+            label = QLabel()
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.RichText)
+            label.setMargin(3)
+            self.table.setCellWidget(index, 1, label)
+        html = f"{escape(pending)} <span style='color:#909090'><i>{escape(guess)}</i></span>"
+        if label.text() != html:
+            label.setText(html)
+            label.setLayoutDirection(Qt.LayoutDirection.RightToLeft if ses.has_rtl(pending + guess)
+                                     else Qt.LayoutDirection.LeftToRight)
+            self._changed.add(index)
+
     def _draw(self, index: int, line) -> None:
         if line.kind == "row":
+            if line.held:
+                self._set(index, ["...", line.source, "", "held: joining to what follows"], muted=True)
+                return
+            for column in range(self.table.columnCount()):  # no longer held or muted
+                item = self.table.item(index, column)
+                if item is not None:
+                    item.setData(Qt.ItemDataRole.ForegroundRole, None)
             notes = []
             if line.problem:
                 notes.append("not translated")

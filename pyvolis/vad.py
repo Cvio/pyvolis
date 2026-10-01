@@ -147,6 +147,21 @@ class Segmenter:
         """True while the detector believes someone is speaking."""
         return self._vad.is_speech_detected()
 
+    def current(self) -> Segment | None:
+        """The utterance still being spoken, from its pre-roll to the audio
+        fed so far, or None when nobody is speaking. Streaming recognition
+        transcribes this while the speech goes on; its first sample is the
+        one the finished segment will start at."""
+        if not self._vad.is_speech_detected():
+            return None
+        start = int(self._vad.current_segment.start)
+        if start < 0:
+            return None
+        oldest = self._fed - self._history_len
+        lead = min(self.pre_roll, max(0, start - self._last_end), max(0, start - oldest))
+        samples = self._history_slice(start - lead, self._fed)
+        return Segment(self._origin + start - lead, samples, detected_sample=self._origin + start)
+
     def reset(self, origin: int) -> None:
         """Forget all state and queued segments. `origin` is the capture
         position of the next sample that will be fed (the half-duplex gate

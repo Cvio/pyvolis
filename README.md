@@ -4,9 +4,10 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P6 of `pyvolis-build.md`. pyvolis has its window: live translation from the
-microphone, taking turns or listening continuously, with voice output; and file mode with a
-timeline and export. Pairing and the shared machine arrive at P9 and P10.
+Status: milestone P7 of `pyvolis-build.md`. pyvolis has its window: live translation from the
+microphone, taking turns or listening continuously, with voice output; file mode with a
+timeline and export; text shown while you speak, and translation that knows what was said
+before. Pairing and the shared machine arrive at P9 and P10.
 
 ## Setup (development)
 
@@ -89,6 +90,20 @@ Fast, and Start. Each row is a sentence; clicking a row plays that stretch of th
 Pause and Stop work at any point, and **Export** writes the folder described below. Arabic and
 Persian are laid out right to left.
 
+Three checkboxes change how it works:
+
+- **Show text while speaking (streaming):** in continuous and file mode, the utterance is
+  transcribed about once a second as it grows. Words that two passes agree on are committed
+  (and whole sentences translated at once); the current guess after them is shown lighter and
+  may change. It roughly doubles the recognition work.
+- **Translate with the earlier sentences as context:** each sentence is translated knowing the
+  last four and their translations, so "her", "it" and the like come out right.
+- **Join short fragments to what follows:** a few words with no full stop wait up to 1.5 s
+  for the rest before they are translated.
+
+**Glossary:** names and terms to keep exactly as they are, separated by commas. It applies
+from the next sentence and isn't saved.
+
 `--report --load` loads every model in turn and prints where it runs and the memory it takes.
 
 ## Translating a file
@@ -100,7 +115,9 @@ Persian are laid out right to left.
 WAV, MP3, M4A, FLAC, OGG and Opus open as they are. The file goes through the same pipeline as
 the microphone. `--asr <folder>` and `--mt <id>` pick the models (as `--report` lists them),
 `--fast` runs as fast as the models allow (otherwise at playing speed), and `--export <dir>`
-says where to write; the default is `exports\<file>-<date>\`:
+says where to write; the default is `exports\<file>-<date>\`. `--streaming` /
+`--no-streaming`, `--context off|carry`, `--no-hold` and `--glossary "Name, Term"` override
+the settings for one run. The export holds:
 
 | File | What it holds |
 |---|---|
@@ -127,6 +144,23 @@ vad_probability = true
 min_peak_probability = 0.8
 repeats = true
 stock_phrases = true   # the phrases are in config\hallucinations.toml
+sparse = true          # a word or two for several seconds of "speech"
+min_words_per_second = 0.33
+sparse_min_seconds = 3.0
+
+[asr]
+streaming = false   # show text while speaking (continuous and file mode)
+interval_s = 1.0    # how often the growing utterance is transcribed
+
+[context]
+mode = "carry"      # "off" = each sentence alone, as Rust volis does
+sentences = 4       # how many earlier sentences, at most
+token_budget = 400  # and never more than this many tokens of them
+
+[fragments]
+hold = true         # join a short fragment to what follows
+min_words = 4       # shorter than this, with no final punctuation, is a fragment
+hold_ms = 1500
 
 [translate]
 model = ""          # as --report lists it; "" = the .gguf at the top of models\mt\
@@ -137,7 +171,7 @@ prompt = "default"  # a file in prompts\
 .\.venv\Scripts\python.exe -m pyvolis --devices        # names for [audio] in volis.toml
 .\.venv\Scripts\python.exe -m pyvolis --listen --seconds 30 --compare
 .\.venv\Scripts\python.exe -m pyvolis --translate "¿Dónde está la estación?" --from es --to en
-.\.venv\Scripts\python.exe scripts	ranscribe.py es_419 ar_eg   # every model on the fixtures
+.\.venv\Scripts\python.exe scripts\transcribe.py es_419 ar_eg   # every model on the fixtures
 .\tests\fetch-fixtures.ps1                               # test clips (development)
 .\.venv\Scripts\python.exe scripts\vad_cuts.py --wav   # cut points with and without pre-roll
 .\.venv\Scripts\python.exe scripts\vad_cuts.py --mic 20 --wav
