@@ -86,7 +86,7 @@ def test_a_revision_is_marked_and_keeps_its_history(window):
 
 def test_loading_memory_errors_and_progress_reach_the_screen(window):
     feed(window, ev.Loading("recognizer whisper"))
-    assert window.indicator.text() == "Loading recognizer whisper..."
+    assert window.indicator.text() == "LOADING recognizer whisper..."
     feed(window, ev.ModelLoaded("recognizer", "whisper", "cuda", 1_600_000_000, 0), ev.Listening(),
          ev.Progress(30.0, 120.0), ev.Error("no installed voice speaks \"ja\""))
     assert "GPU 1.6 GB" in window.memory.text() and "on the GPU" in window.memory.text()

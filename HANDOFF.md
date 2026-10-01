@@ -25,13 +25,17 @@ Last updated 2026-09-30. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   (`sentences.py`), a translation thread, the events (`events.py`), the export folder
   (`export.py`) and quick scores (`scoring.py`, with model-bench's `textclean.py` copied
   verbatim). `scripts/make_fixture_file.py` builds test recordings with references.
-- **P5 built; its check is the user's to run** (open a file in the window, watch, click a row,
-  export; a live conversation; Arabic and Persian right to left). The window (`gui/window.py`,
+- **P5 done; the user ran its check on 2026-10-01** (a Spanish file, an Arabic file, a live
+  conversation in the window: all three looked right). The window (`gui/window.py`,
   drawing `gui/session.py`), voice output (`tts.py`, `playback.py`, the half-duplex gate), and
   `--report --load`. Checked without a person: `scripts/window_check.py` (the window through a
   file run, offscreen, with a responsiveness measurement), `scripts/gate_check.py` (does pyvolis
   hear itself, through the VB-Audio cable).
-- Next: P6 (continuous and turn-based modes). Wait for the go-ahead.
+- **P6 done:** continuous and turn-based modes, switchable while running; the turn key in toggle
+  and hold styles; the microphone device closed between turns; a turn as one utterance, trimmed
+  of silence and split at pauses past 25 s; the three-state indicator. Checked against real
+  devices by `scripts/turn_check.py` (15 of 15).
+- Next: P7 (streaming recognition and carry-forward context). Wait for the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -138,6 +142,31 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     the half-duplex gate doesn't apply to a file.
 29. **`--report --load`** loads each usable model in turn and prints device, memory and load
     time (Rust has no equivalent).
+
+30. **A turn ends when all its sentences have run their course.** In Rust a turn is one
+    utterance with one reply, finished when that reply ends. In pyvolis a turn can hold several
+    sentences, so the window stays in "processing" until every one is translated or refused
+    and, when replies are spoken, spoken; the voice going quiet between two sentences doesn't
+    end it. Taking a new turn cuts off whatever is being spoken, as in Rust; sentences of the
+    earlier turn that arrive during the new one wait and play when it ends (Rust's rule for a
+    reply that arrives mid-turn).
+31. **The turn key is taken by an application event filter** (`TurnKeyFilter`), the Qt
+    equivalent of Rust removing the key from egui's input before any widget runs.
+    `[mode].turn_key` keeps egui's key names, since the file is shared.
+32. **`mode.kind = "shared"`** isn't built until P10: a live run then takes turns and says so.
+
+## P6 findings
+
+- `scripts/turn_check.py`, through the cable: speech while idle gives no transcript and no level
+  report, and the capture device isn't open; a turn with a 2 s pause inside is one transcript
+  (407 characters, 3 sentences); taking a turn silences a reply at once (the open microphone
+  then hears -90 dBFS); the mode switches while running, both ways.
+- The level log's "digital silence - is the microphone muted?" fired wrongly when a turn opened,
+  because its window counted time with the microphone closed; the meters now restart when the
+  microphone opens.
+- On the same Spanish file, Gemma 3 4B scores chrF 62.1 against Qwen3 1.7B's 58.4, at about
+  3.2 s a sentence against 2.3 s (CPU). In the user's live test Gemma answered a question
+  ("How do you say in Mexican Spanish...") instead of translating it, which no guard catches.
 
 ## P5 findings
 

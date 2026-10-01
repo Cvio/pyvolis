@@ -21,8 +21,8 @@ import threading
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QBrush, QColor
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QRadioButton, QStyledItemDelegate, QTableWidget,
@@ -34,7 +34,7 @@ from .. import events as ev
 from ..audio import SAMPLE_RATE
 from ..config import Config, ConfigError, PyvolisConfig, save_pyvolis_selections
 from ..filesource import FileSourceError, read_16k_mono
-from ..pipeline import ArraySource, Collected, Options, Pipeline
+from ..pipeline import CONTINUOUS, TURN, ArraySource, Collected, Options, Pipeline
 from . import session as ses
 
 log = logging.getLogger(__name__)
@@ -58,6 +58,51 @@ class DirectionDelegate(QStyledItemDelegate):
         if ses.has_rtl(option.text):
             option.direction = Qt.LayoutDirection.RightToLeft
             option.displayAlignment = Qt.AlignmentFlag.AlignLeading | Qt.AlignmentFlag.AlignTop
+
+
+# [mode].turn_key in volis.toml uses egui's key names (it is Rust's file).
+KEY_NAMES = {
+    "Space": Qt.Key.Key_Space, "Enter": Qt.Key.Key_Return, "Tab": Qt.Key.Key_Tab, "Escape": Qt.Key.Key_Escape,
+    "ArrowLeft": Qt.Key.Key_Left, "ArrowRight": Qt.Key.Key_Right, "ArrowUp": Qt.Key.Key_Up,
+    "ArrowDown": Qt.Key.Key_Down, "Backspace": Qt.Key.Key_Backspace, "Insert": Qt.Key.Key_Insert,
+    "Delete": Qt.Key.Key_Delete, "Home": Qt.Key.Key_Home, "End": Qt.Key.Key_End,
+    "PageUp": Qt.Key.Key_PageUp, "PageDown": Qt.Key.Key_PageDown,
+}
+
+
+def qt_key(name: str):
+    """The Qt key for a [mode].turn_key name, or None if it isn't one."""
+    if name in KEY_NAMES:
+        return KEY_NAMES[name]
+    sequence = QKeySequence.fromString(name)
+    return sequence[0].key() if sequence.count() == 1 else None
+
+
+class TurnKeyFilter(QObject):
+    """Takes the turn key out of the application's input before any widget
+    sees it, and says what it did. A focused button treats Space as a click;
+    the turn key must never also press whatever has focus. Auto-repeats of a
+    held key are swallowed too, and are not presses. Installed on the
+    application, so it works wherever the focus is inside the window."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self.window = window
+
+    def eventFilter(self, _watched, event) -> bool:  # noqa: N802 - Qt's name
+        kind = event.type()
+        if kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease, QEvent.Type.ShortcutOverride):
+            w = self.window
+            if event.key() != w.turn_key or not w.turn_key_active() or not w.isActiveWindow():
+                return False
+            if kind == QEvent.Type.ShortcutOverride:
+                event.accept()  # ours: no shortcut or button may claim it
+                return True
+            if not event.isAutoRepeat():
+                w.turn_key_event(ses.KeyEdges(pressed=kind == QEvent.Type.KeyPress,
+                                              released=kind == QEvent.Type.KeyRelease))
+            return True
+        return False
 
 
 def run(root: Path, config: Config) -> int:
@@ -89,12 +134,17 @@ class MainWindow(QMainWindow):
         self._drawn = 0  # lines already in the table
         self._changed: set[int] = set()
         self._redraw = False  # set by a background thread that has something to show
+        self.turn_key = qt_key(config.mode.turn_key)
+        self.turn_key_state = ses.TurnKey()
+        self.holding = False
 
         self.setWindowTitle("pyvolis")
         self.resize(1180, 760)
         self.setAcceptDrops(True)
         self._build()
         self.rediscover()
+        self._key_filter = TurnKeyFilter(self)
+        QApplication.instance().installEventFilter(self._key_filter)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.tick)
         self._timer.start(REFRESH_MS)
@@ -170,7 +220,24 @@ class MainWindow(QMainWindow):
         self.half_duplex = QCheckBox("Half-duplex (mute the microphone while speaking)")
         self.half_duplex.setToolTip("Turn off only when using headphones: with speakers, pyvolis would hear itself.")
         self.compare = QCheckBox("Compare recognizers (no translation or speech)")
+        self.mode_turn = QRadioButton("Take turns")
+        self.mode_continuous = QRadioButton("Listen continuously")
+        key = self.config.mode.turn_key
+        self.style_toggle = QRadioButton(f"Press {key} to start, again to stop")
+        self.style_hold = QRadioButton(f"Hold {key} while speaking")
+        mode_box, style_box = QWidget(), QWidget()
+        mode_row, style_row = QVBoxLayout(mode_box), QVBoxLayout(style_box)
+        for row in (mode_row, style_row):
+            row.setContentsMargins(0, 0, 0, 0)
+        mode_row.addWidget(self.mode_turn)
+        style_row.setContentsMargins(18, 0, 0, 0)
+        for widget in (self.style_toggle, self.style_hold):
+            style_row.addWidget(widget)
+        mode_row.addWidget(style_box)
+        mode_row.addWidget(self.mode_continuous)
+        self.style_box, self.mode_box = style_box, mode_box
         form = QFormLayout()
+        form.addRow("Mode", mode_box)
         form.addRow("Spoken", self.source_lang)
         form.addRow("Translate into", self.target_lang)
         form.addRow("Recognizer", self.recognizer)
@@ -187,6 +254,12 @@ class MainWindow(QMainWindow):
         settings.setLayout(form)
         settings.setFixedWidth(400)
         self.settings_box = settings
+        # The mode, unlike every other setting, can change while running.
+        self.locked_while_running = [self.source_lang, self.target_lang, self.recognizer, self.translator,
+                                     self.input_device, self.output_device, self.speak, self.half_duplex,
+                                     self.compare]
+        for widget in (self.mode_turn, self.mode_continuous, self.style_toggle, self.style_hold):
+            widget.toggled.connect(self.mode_controls_changed)
         for combo in (self.source_lang, self.target_lang):
             for variety in varieties.TABLE:
                 combo.addItem(variety.display, variety.tag)
@@ -213,10 +286,14 @@ class MainWindow(QMainWindow):
 
         self.latency = QLabel()
         self.status = QLabel()
-        self.status.setWordWrap(True)
         self.error = QLabel()
         self.error.setWordWrap(True)
         self.error.setStyleSheet("color: #b83a26")
+        for label in (self.latency, self.status):
+            # Its own lines, never squeezed: a wrapped label under a stretching
+            # table was cut off at the window's lower edge.
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setSizePolicy(label.sizePolicy().horizontalPolicy(), label.sizePolicy().Policy.Fixed)
 
         body = QHBoxLayout()
         body.addWidget(settings)
@@ -229,7 +306,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(file_row)
         layout.addLayout(body, 1)
         for widget in (self.latency, self.status, self.error):
-            layout.addWidget(widget)
+            layout.addWidget(widget, 0)
+        layout.setContentsMargins(9, 6, 9, 10)
         central = QWidget()
         central.setLayout(layout)
         self.setCentralWidget(central)
@@ -269,6 +347,8 @@ class MainWindow(QMainWindow):
             _select(combo, chosen)
         self.speak.setChecked(self.config.tts.enabled)
         self.half_duplex.setChecked(self.config.tts.half_duplex)
+        (self.mode_continuous if self.config.mode.kind == CONTINUOUS else self.mode_turn).setChecked(True)
+        (self.style_hold if self.config.mode.turn_style == "hold" else self.style_toggle).setChecked(True)
         self._filling = False
 
     def _fill_recognizers(self) -> None:
@@ -297,6 +377,48 @@ class MainWindow(QMainWindow):
         self._fill_recognizers()
         self._filling = False
         self.save()
+
+    def mode_controls_changed(self) -> None:
+        """The mode or the turn style was changed. It applies at once, even
+        while running, and is saved."""
+        if getattr(self, "_filling", True):
+            return
+        before = (self.config.mode.kind, self.config.mode.turn_style)
+        kind = CONTINUOUS if self.mode_continuous.isChecked() else TURN
+        style = "hold" if self.style_hold.isChecked() else "toggle"
+        if (kind, style) == before:
+            return
+        self.config.mode.kind, self.config.mode.turn_style = kind, style
+        self.holding = False
+        if kind != before[0] and self.pipeline is not None and self.source is None:
+            self.pipeline.set_mode(kind)
+        self.save()
+        self.refresh()
+
+    def turn_key_active(self) -> bool:
+        """Whether the turn key is ours right now: a live run, taking turns."""
+        return (self.pipeline is not None and self.source is None and self.session.mode == TURN
+                and self.session.state == ses.LISTENING)
+
+    def turn_key_event(self, raw: ses.KeyEdges) -> None:
+        edges = self.turn_key_state.update(raw, self.isActiveWindow())
+        self._turn_key(edges)
+
+    def _turn_key(self, edges: ses.KeyEdges) -> None:
+        if not self.turn_key_active():
+            return
+        action, self.holding = ses.turn_key_action(self.config.mode.turn_style, self.session.turn, edges,
+                                                   self.holding, self.isActiveWindow())
+        if action == "begin":
+            self.pipeline.begin_turn()
+        elif action == "end":
+            self.pipeline.end_turn()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        # Losing focus with the key down: the release would never arrive.
+        if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+            self._turn_key(self.turn_key_state.update(ses.KeyEdges(), False))
+        super().changeEvent(event)
 
     def mode_changed(self) -> None:
         """Microphone or file. The "Speak translations" box shows each mode's
@@ -515,23 +637,28 @@ class MainWindow(QMainWindow):
         self.pause_button.setVisible(file_mode)
         self.pause_button.setEnabled(running and self.source is not None)
         self.pause_button.setText("Resume" if self.paused else "Pause")
-        self.settings_box.setEnabled(not running)
+        for widget in self.locked_while_running:
+            widget.setEnabled(not running)
+        self.mode_box.setEnabled(not file_mode)
+        self.style_box.setEnabled(self.mode_turn.isChecked())
         for widget in (self.open_button, self.realtime, self.fast, self.play_original, self.source_live, self.source_file):
             widget.setEnabled(not running)
         for widget in (self.realtime, self.fast, self.play_original, self.export_button, self.open_button, self.progress):
             widget.setVisible(file_mode)
-        self.input_device.setEnabled(not file_mode)
-        self.half_duplex.setEnabled(not file_mode)
+        self.input_device.setEnabled(not file_mode and not running)
+        self.half_duplex.setEnabled(not file_mode and not running)
+        self.file_label.setVisible(file_mode)
         if self.file_path is not None:
             seconds = len(self.file_audio) / SAMPLE_RATE if self.file_audio is not None else 0
             self.file_label.setText(f"{self.file_path.name}  ({ses.clock(seconds)})")
             self.file_label.setToolTip(str(self.file_path))
             self.file_label.setStyleSheet("")
 
-        text, colour = _indicator(s, self.paused, file_mode)
+        text, colour = ses.indicator(s, self.config.mode.turn_key, self.config.mode.turn_style == "hold",
+                                     self.paused, file_mode)
         self.indicator.setText(text)
-        self.indicator.setStyleSheet(f"font-weight: bold; padding: 4px 10px; border-radius: 4px; "
-                                     f"background: {colour}; color: white")
+        self.indicator.setStyleSheet(f"font-weight: bold; font-size: 15pt; padding: 6px 14px; "
+                                     f"border-radius: 6px; background: {colour}; color: white")
         self.meter.setVisible(not file_mode)
         self.meter.setValue(int(max(METER_FLOOR_DB, s.level_db)) if s.level_db is not None else int(METER_FLOOR_DB))
 
@@ -561,7 +688,8 @@ class MainWindow(QMainWindow):
             self.memory.setText(f"Loaded: GPU {gpu / 1e9:.1f} GB, system {cpu / 1e9:.1f} GB\n{names}")
         else:
             self.memory.setText("")
-        stats = dict(s.stats) if s.stats else s.counts() | {"worst_stall_ms": s.worst_stall_ms}
+        # While a run is going the pipeline hasn't summed up yet: show what the rows say.
+        stats = dict(s.stats) if s.stats else s.counts() | s.running_stats() | {"worst_stall_ms": s.worst_stall_ms}
         line = filerun.status_line(stats) if (s.lines or s.stats) else ""
         if s.comparing:
             line = "Comparing recognizers: nothing is translated or spoken.  " + line
@@ -645,16 +773,3 @@ def _select(combo: QComboBox, data: str) -> bool:
     if index >= 0:
         combo.setCurrentIndex(index)
     return index >= 0
-
-
-def _indicator(s: ses.Session, paused: bool, file_mode: bool) -> tuple[str, str]:
-    """What the run is doing, readable from across a desk."""
-    if s.state == ses.STARTING:
-        return f"Loading {s.loading}...", "#8a6d1c"
-    if s.state == ses.LISTENING:
-        if paused:
-            return "Paused", "#6b6b6b"
-        if s.speaking:
-            return "Speaking", "#2d6cb5"
-        return ("Reading the file" if file_mode else "Listening"), "#2e7d32"
-    return "Stopped", "#555555"

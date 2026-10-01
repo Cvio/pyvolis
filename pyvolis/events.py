@@ -100,6 +100,29 @@ class Listening(Event):
 
 
 @dataclass
+class Mode(Event):
+    """The mode the pipeline is in: "continuous" or "turn"."""
+
+    kind: str
+
+
+@dataclass
+class TurnStarted(Event):
+    """A turn is open: the microphone is live."""
+
+
+@dataclass
+class TurnEnded(Event):
+    """The turn is over and the microphone closed; its words are being
+    recognised, translated and spoken."""
+
+
+@dataclass
+class TurnCancelled(Event):
+    """A turn, or what it was producing, was cancelled; nothing from it is spoken."""
+
+
+@dataclass
 class Progress(Event):
     """A file source's position (seconds) and length."""
 

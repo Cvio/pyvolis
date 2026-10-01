@@ -41,9 +41,9 @@ from .asr import guards as guards_mod
 from .audio import SAMPLE_RATE
 from .config import Config, PyvolisConfig
 from .events import (  # noqa: F401 - re-exported for consumers
-    ComparisonMsg, Dropped, Error, Event, Final, Level, Listening, Loading, ModelLoaded, NothingRecognized,
-    NotTranslated, Progress, SentenceMsg, SpeakingEnded, SpeakingStarted, SpeechStarted, Stall, Stopped,
-    Summary, Translated,
+    ComparisonMsg, Dropped, Error, Event, Final, Level, Listening, Loading, Mode, ModelLoaded,
+    NothingRecognized, NotTranslated, Progress, SentenceMsg, SpeakingEnded, SpeakingStarted, SpeechStarted,
+    Stall, Stopped, Summary, Translated, TurnCancelled, TurnEnded, TurnStarted,
 )
 from .ring import UtteranceRing
 from .vad import Segment, Segmenter, VadSettings
@@ -55,6 +55,24 @@ TRANSLATION_QUEUE = 4  # Rust's TRANSLATION_QUEUE
 SPEECH_QUEUE = 8  # sentences waiting to be spoken
 LEVEL_EVENT = 0.2  # seconds between Level events (Rust's LEVEL_EVENT)
 LEVEL_LOG = 5.0  # seconds between level lines in the log (Rust's LEVEL_LOG)
+# The longest stretch handed to a recognizer at once (Rust's MAX_PART). Whisper
+# hears 30 seconds and no more; a long turn is split at its pauses into parts
+# below that, transcribed in order and joined.
+MAX_PART = 25 * SAMPLE_RATE
+
+CONTINUOUS, TURN = "continuous", "turn"
+
+
+@dataclass(frozen=True)
+class Command:
+    """What a consumer asks of a running pipeline (Rust's PipelineCmd)."""
+
+    name: str  # "set_mode" | "begin_turn" | "end_turn" | "cancel"
+    mode: str = ""
+
+
+def describe_mode(mode: str) -> str:
+    return "listening continuously" if mode == CONTINUOUS else "waiting for a turn, microphone closed"
 STALL_TICK = 0.05  # the stall probe's timer
 STALL_REPORT_MS = 150  # lateness worth an event
 
@@ -209,7 +227,21 @@ class Pipeline:
         self.recognizer_name = ""
         self.translator_name = ""
         self._stop = threading.Event()
+        self._commands: queue.Queue = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="pyvolis-pipeline", daemon=True)
+
+    def send(self, command: Command) -> None:
+        """Ask the running pipeline for something: a mode, a turn, a cancel."""
+        self._commands.put(command)
+
+    def set_mode(self, mode: str) -> None:
+        self.send(Command("set_mode", mode))
+
+    def begin_turn(self) -> None:
+        self.send(Command("begin_turn"))
+
+    def end_turn(self) -> None:
+        self.send(Command("end_turn"))
 
     def start(self) -> Pipeline:
         self._thread.start()
@@ -311,19 +343,135 @@ class Pipeline:
         chunks: queue.Queue = queue.Queue(QUEUE_CHUNKS)
         probe = StallProbe(self)
 
-        def handle(segment: Segment) -> None:
-            self._handle(segment, recognizer, language, ring, guards, comparison, segments_dir, translation)
+        def handle(segment: Segment, parts=None) -> None:
+            self._handle(segment, recognizer, language, ring, guards, comparison, segments_dir, translation, parts)
 
-        log.info('ready: listening continuously, "%s" hears "%s"', self.recognizer_name, language)
-        probe.start()
-        self.source.start(chunks)
-        self.emit(Listening())
-        speaking, consumed, reported = False, 0, 0.0
+        # Continuous mode keeps the microphone open. Turn mode keeps the device
+        # closed until a turn is taken and closes it again when the turn ends:
+        # between turns the microphone is released, not merely ignored. A file
+        # has no turns.
+        mode = CONTINUOUS if not live or config.mode.kind == CONTINUOUS else TURN
+        if live and config.mode.kind not in (CONTINUOUS, TURN):
+            self.emit(Error(f'mode "{config.mode.kind}" arrives at a later milestone; taking turns instead'))
+        control = speaker.player.control() if speaker is not None else None
+        mic_open = False
+        turn: _Turn | None = None
+
+        def open_mic() -> None:
+            nonlocal mic_open
+            self.source.start(chunks)
+            mic_open = True
+            # The meters measure the open microphone, not the time it was closed.
+            event_level.restart()
+            log_level.restart()
+
+        def close_mic() -> None:
+            nonlocal mic_open
+            if mic_open:
+                self.source.stop()
+                mic_open = False
+            while not chunks.empty():  # what the device delivered after the turn ended
+                chunks.get_nowait()
+
+        def finish_turn(active: _Turn) -> None:
+            """Close the microphone, then treat everything said in the turn as
+            one utterance, trimmed of silence at either end."""
+            close_mic()
+            log.info("turn ended: microphone closed")
+            self.emit(TurnEnded())
+            if control is not None:
+                control.end_turn()  # anything that arrived for the speaker during the turn plays now
+            segments = active.segments + segmenter.flush()
+            audio = np.concatenate(active.audio) if active.audio else np.zeros(0, np.float32)
+            turn_ms = len(audio) * 1000 // SAMPLE_RATE
+            found = trim_and_split(active.origin, len(audio), segments, MAX_PART)
+            if found is None:
+                log.info("turn: %d ms captured, no speech in it", turn_ms)
+                utterance = ring.push(active.origin * 1000 // SAMPLE_RATE, audio)
+                self.emit(NothingRecognized(utterance.index, turn_ms, active.origin / SAMPLE_RATE))
+                return
+            (first, last), parts = found
+            log.info("turn: %d ms captured, %d ms of speech in %d part(s)", turn_ms,
+                     (last - first) * 1000 // SAMPLE_RATE, len(parts))
+            handle(Segment(active.origin + first, audio[first:last], active.origin + first), parts)
+
         event_level, log_level = LevelMeter(LEVEL_EVENT), LevelMeter(LEVEL_LOG)
+        probe.start()
+        if mode == CONTINUOUS:
+            open_mic()
+        log.info("ready: %s", describe_mode(mode))
+        self.emit(Listening())
+        self.emit(Mode(mode))
+        speaking, consumed, reported = False, 0, 0.0
         try:
             while not self._stop.is_set():
+                # Commands first. With the microphone closed there is no audio
+                # to wait on, so wait on commands; a turn opens the moment it
+                # is asked for.
+                pending = []
                 try:
-                    chunk = chunks.get(timeout=0.1)
+                    pending.append(self._commands.get(timeout=0.1) if not mic_open else self._commands.get_nowait())
+                    while True:
+                        pending.append(self._commands.get_nowait())
+                except queue.Empty:
+                    pass
+                for command in pending:
+                    if not live:
+                        continue  # a file has no turns and one mode
+                    if command.name == "set_mode" and command.mode in (CONTINUOUS, TURN) and command.mode != mode:
+                        # Finish whatever the old mode had in progress first.
+                        if turn is not None:
+                            finish_turn(turn)
+                            turn = None
+                        else:
+                            for segment in segmenter.flush():
+                                handle(segment)
+                        close_mic()
+                        mode = command.mode
+                        segmenter.reset(consumed)
+                        speaking = False
+                        if mode == CONTINUOUS:
+                            open_mic()
+                        log.info("now %s", describe_mode(mode))
+                        self.emit(Mode(mode))
+                    elif command.name == "begin_turn" and mode == TURN and turn is None:
+                        if control is not None:
+                            control.begin_turn()  # stop any reply mid-word, hold what arrives
+                        try:
+                            open_mic()
+                        except Exception as e:  # a device that won't open fails this turn, not the session
+                            if control is not None:
+                                control.end_turn()
+                            log.warning("cannot start a turn: %s", e)
+                            self.emit(Error(f"cannot start a turn: {e}"))
+                            continue
+                        log.info("turn started: microphone open")
+                        segmenter.reset(consumed)
+                        speaking = False
+                        turn = _Turn(consumed)
+                        self.emit(TurnStarted())
+                    elif command.name == "end_turn" and turn is not None:
+                        finish_turn(turn)
+                        turn = None
+                    elif command.name == "cancel":
+                        if turn is not None:
+                            close_mic()
+                            segmenter.reset(consumed)
+                            speaking = False
+                            log.info("turn cancelled: %d ms of audio discarded, microphone closed",
+                                     sum(map(len, turn.audio)) * 1000 // SAMPLE_RATE)
+                            turn = None
+                        if translation is not None:
+                            translation.cancel()
+                        if control is not None:
+                            control.stop()
+                            control.end_turn()
+                        self.emit(TurnCancelled())
+                if not mic_open:
+                    continue
+
+                try:
+                    chunk = chunks.get(timeout=0.02 if live else 0.1)
                 except queue.Empty:
                     if self.source.done():
                         break
@@ -333,6 +481,11 @@ class Pipeline:
                 # is discarded and the detector held reset, so nothing of it
                 # survives into the next utterance.
                 if gate.is_closed():
+                    # A turn holds playback, so this should not happen during
+                    # one; if it does, silence keeps the turn's audio aligned
+                    # with the timeline its segments are stamped on.
+                    if turn is not None:
+                        turn.audio.append(np.zeros(len(chunk), np.float32))
                     segmenter.reset(consumed)
                     speaking = False
                     continue
@@ -346,8 +499,15 @@ class Pipeline:
                             log.warning("input level: digital silence over the last %d s - is the microphone muted?", LEVEL_LOG)
                         else:
                             log.info("input level: peak %.1f dBFS over the last %d s", due[0], LEVEL_LOG)
-                for segment in segmenter.push(chunk):
-                    handle(segment)
+                segments = segmenter.push(chunk)
+                if turn is not None:
+                    # In a turn the user decides where the utterance ends; the
+                    # detector's segments only mark where the speech is.
+                    turn.audio.append(chunk)
+                    turn.segments.extend(segments)
+                else:
+                    for segment in segments:
+                        handle(segment)
                 now = segmenter.speech_in_progress()
                 if now and not speaking:
                     self.emit(SpeechStarted(start=consumed / SAMPLE_RATE))
@@ -356,10 +516,12 @@ class Pipeline:
                     reported = consumed / SAMPLE_RATE
                     self.emit(Progress(reported, self.source.duration))
             # End of input: what's still queued, and whatever is still being said.
-            while not self._stop.is_set() and not chunks.empty():
+            while not self._stop.is_set() and mic_open and not chunks.empty():
                 for segment in segmenter.push(chunks.get()):
                     handle(segment)
-            if not self._stop.is_set():
+            if turn is not None:
+                finish_turn(turn)
+            elif not self._stop.is_set() or live:
                 for segment in segmenter.flush():
                     handle(segment)
             if self.source.duration:
@@ -381,7 +543,8 @@ class Pipeline:
         phrases = guards_mod.load_phrases(paths.hallucinations_file(self.root)) if g.stock_phrases else {}
         return guards_mod.Guards(phrases, g.vad_probability, g.repeats, g.stock_phrases, scorer)
 
-    def _handle(self, segment: Segment, recognizer, language, ring, guards, comparison, segments_dir, translation) -> None:
+    def _handle(self, segment: Segment, recognizer, language, ring, guards, comparison, segments_dir, translation,
+                parts=None) -> None:
         utterance = ring.push(segment.start_ms(), segment.samples)
         cut_at = time.monotonic()
         start, end = segment.start_sample / SAMPLE_RATE, segment.start_sample / SAMPLE_RATE + len(segment.samples) / SAMPLE_RATE
@@ -391,7 +554,7 @@ class Pipeline:
         # be right most of the time, and hide the bug.
         log.info('  transcribing as "%s" with "%s"', language, self.recognizer_name)
         try:
-            result = recognizer.transcribe(utterance.pcm, language)
+            result = transcribe_parts(recognizer, utterance.pcm, parts, language)
         except asr_pkg.AsrError as e:
             log.warning("  transcription failed: %s", e)
             self.emit(Error(f"utterance {utterance.index}: transcription failed: {e}"))
@@ -432,6 +595,66 @@ class Pipeline:
             write_segment(utterance, segments_dir)
 
 
+@dataclass
+class _Turn:
+    """A turn in progress: everything captured since it began, and where the
+    detector heard speech in it."""
+
+    origin: int  # capture position of the turn's first sample
+    audio: list = field(default_factory=list)
+    segments: list = field(default_factory=list)
+
+
+def trim_and_split(origin: int, length: int, segments: list[Segment], max_part: int):
+    """Where the speech is in a turn, and how to split it for the recognizer
+    (Rust's trim_and_split). Returns ((first, last), parts): the span from the
+    first speech to the last, relative to the start of the turn's audio, and
+    that span divided into parts no longer than `max_part`, split at the pauses
+    between segments; parts are relative to the span. None when the detector
+    heard no speech at all."""
+    spans = []
+    for segment in segments:
+        start = segment.start_sample - origin
+        if start < 0:
+            continue
+        end = min(start + len(segment.samples), length)
+        if start < end:
+            spans.append((start, end))
+    if not spans:
+        return None
+    first, last = spans[0][0], max(end for _, end in spans)
+    parts, current = [], list(spans[0])
+    for start, end in spans[1:]:
+        if end - current[0] > max_part:
+            parts.append(tuple(current))
+            current = [start, end]
+        else:
+            current[1] = max(current[1], end)
+    parts.append(tuple(current))
+    return (first, last), [(a - first, b - first) for a, b in parts]
+
+
+def transcribe_parts(recognizer, pcm: np.ndarray, parts, language: str) -> asr_pkg.AsrResult:
+    """Transcribe an utterance, part by part when it has been split, joining
+    the texts and shifting each part's word timings onto the utterance."""
+    if not parts or len(parts) <= 1:
+        return recognizer.transcribe(pcm, language)
+    texts, words, seconds, timed = [], [], 0.0, True
+    for start, end in parts:
+        result = recognizer.transcribe(pcm[start:end], language)
+        seconds += result.seconds
+        if not result.text.strip():
+            continue
+        texts.append(result.text.strip())
+        if result.words is None:
+            timed = False
+        else:
+            offset = start / SAMPLE_RATE
+            words += [asr_pkg.Word(w.text, w.start + offset, w.end + offset) for w in result.words]
+    return asr_pkg.AsrResult(" ".join(texts), words if timed and words else None, None,
+                             language.split("-")[0], seconds)
+
+
 class TranslationThread:
     """Rust's spawn_translator: its own thread, a small queue."""
 
@@ -455,6 +678,14 @@ class TranslationThread:
             log.warning("translation is behind; sentence %s not translated", sentence.id)
             self.pipeline.stats.not_translated += 1
             self.pipeline.emit(NotTranslated(sentence.id, "translation fell behind the conversation"))
+
+    def cancel(self) -> None:
+        """Drop what is queued for translation (a cancelled turn)."""
+        while True:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                return
 
     def finish(self, wait: bool) -> None:
         """Stop after what's queued (wait) or at once."""
@@ -586,6 +817,9 @@ class LevelMeter:
         self.every = every
         self.peak = 0.0
         self.since = time.monotonic()
+
+    def restart(self) -> None:
+        self.peak, self.since = 0.0, time.monotonic()
 
     def observe(self, chunk: np.ndarray) -> None:
         if len(chunk):

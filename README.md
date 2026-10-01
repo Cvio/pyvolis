@@ -4,9 +4,9 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P5 of `pyvolis-build.md`. pyvolis has its window: live translation from the
-microphone with voice output, and file mode with a timeline and export. Turn-taking, pairing
-and the shared machine arrive at P6, P9 and P10.
+Status: milestone P6 of `pyvolis-build.md`. pyvolis has its window: live translation from the
+microphone, taking turns or listening continuously, with voice output; and file mode with a
+timeline and export. Pairing and the shared machine arrive at P9 and P10.
 
 ## Setup (development)
 
@@ -71,9 +71,18 @@ listed as "languages unknown" and offered for every language.
 
 Pick what is spoken and what to translate into; the recognizer list is ordered for that
 language (tuned for the variety, general, other varieties, then models that don't say which
-languages they know). **Start** listens to the microphone, shows each sentence and its
-translation, and speaks the translation. Half-duplex mutes the microphone while pyvolis speaks;
-turn it off only with headphones.
+languages they know). **Start** then waits for you, in one of two modes, which you can switch
+while it runs:
+
+- **Take turns:** the microphone is closed until you press Space; press again to finish (or
+  choose "Hold Space while speaking"). Everything said in the turn is translated and spoken
+  when it ends. Taking a new turn cuts off a reply that is still being spoken. The key works
+  while the window has focus, and never also clicks the button that has focus.
+- **Listen continuously:** hands-free; every pause ends an utterance.
+
+Each sentence and its translation is shown, and the translation spoken. Half-duplex mutes the
+microphone while pyvolis speaks; turn it off only with headphones. `--listen` on the command
+line always listens continuously.
 
 **File** mode: open a recording (File > Open, or drop it on the window), choose Real time or
 Fast, and Start. Each row is a sentence; clicking a row plays that stretch of the recording.
