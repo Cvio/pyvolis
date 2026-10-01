@@ -100,6 +100,8 @@ class Options:
     context: str | None = None
     hold: bool | None = None
     glossary: list[str] = field(default_factory=list)
+    # Paired mode (P9). None = [peer].enabled for the microphone; a file never pairs.
+    pair: bool | None = None
     # Overrides for one run (file mode's --asr / --mt / --prompt); "" = settings.
     asr: str = ""
     mt: str = ""
@@ -252,13 +254,47 @@ class Pipeline:
         self.recognizer_name = ""
         self.translator_name = ""
         self.glossary = list(options.glossary)
+        # Paired mode: the other PC speaks this PC's translations, and this PC
+        # speaks what arrives from it. Comparing recognizers is a harness, not
+        # a conversation, and a file is not one either: neither pairs.
+        wanted = options.pair if options.pair is not None else config.peer.enabled
+        self.paired = bool(wanted) and not options.compare and not self.source.lossless
+        self.peer = None
+        self._speaker_thread = None  # set once the voice is loaded
         self._stop = threading.Event()
         self._commands: queue.Queue = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="pyvolis-pipeline", daemon=True)
 
     def send(self, command: Command) -> None:
-        """Ask the running pipeline for something: a mode, a turn, a cancel."""
-        self._commands.put(command)
+        """Ask the running pipeline for something: a mode, a turn, a cancel.
+
+        In paired mode the turn key goes to the peer thread first: a turn
+        needs the floor, and the peer thread opens the microphone only once
+        the other PC has granted it."""
+        if self.peer is not None and command.name == "begin_turn":
+            self.peer.want_turn()
+        elif self.peer is not None and command.name == "end_turn":
+            self.peer.end_turn()
+        else:
+            if self.peer is not None and command.name == "set_mode":
+                self.peer.set_mode(command.mode)
+            self._commands.put(command)
+
+    def connect(self, address) -> None:
+        """Paired mode: dial the other PC (a peer.Address)."""
+        if self.peer is not None:
+            self.peer.connect(address)
+
+    def disconnect(self) -> None:
+        if self.peer is not None:
+            self.peer.disconnect()
+
+    def _speak_remote(self, lang: str, text: str) -> str:
+        """Say what arrived from the other PC. "off" when this run has no voice."""
+        speaker = self._speaker_thread
+        if speaker is None:
+            return "off"
+        return "ok" if speaker.submit_remote(text, lang) else "full"
 
     def set_glossary(self, terms: list[str]) -> None:
         """Names and terms to keep exactly, from the next sentence on."""
@@ -274,6 +310,16 @@ class Pipeline:
         self.send(Command("end_turn"))
 
     def start(self) -> Pipeline:
+        if self.paired:
+            # Listening starts at once, so the other PC can connect while the
+            # models load.
+            from . import peer
+
+            kind = self.config.mode.kind
+            self.peer = peer.start(self.config, kind if kind in (CONTINUOUS, TURN) else TURN, peer.Wiring(
+                begin_turn=lambda: self._commands.put(Command("begin_turn")),
+                end_turn=lambda: self._commands.put(Command("end_turn")),
+                speak=self._speak_remote, emit=self.emit))
         self._thread.start()
         return self
 
@@ -295,6 +341,8 @@ class Pipeline:
             log.exception("the pipeline stopped")
             self.emit(Error(str(e)))
         finally:
+            if self.peer is not None:
+                self.peer.stop()
             self.emit(Summary(self.stats.summary()))
             self.emit(Stopped())
 
@@ -358,9 +406,15 @@ class Pipeline:
         # or broken translator is an error now rather than a thread that dies later.
         live = not self.source.lossless
         gate, speaker = self._speaker(live)
-        translation = TranslationThread(self, self._translator(), target, speaker) if self.options.translate else None
+        # Solo, this PC speaks its own translations. Paired, the other PC
+        # speaks them, and this PC speaks what arrives from the other side,
+        # which is in this PC's own language.
+        translation = None
+        if self.options.translate:
+            translation = TranslationThread(self, self._translator(), target, None if self.paired else speaker, self.peer)
         if speaker is not None:
-            speaker.prepare(target)
+            speaker.prepare(language if self.paired else target)
+            self._speaker_thread = speaker
 
         guards = self._guards()
         comparison = compare.Engines(engines) if self.options.compare else None
@@ -395,8 +449,8 @@ class Pipeline:
             every_pass=fast_file, source_clock=fast_file,
         )
 
-        def handle(segment: Segment, parts=None, speech_seconds=None) -> None:
-            worker.final(segment, parts, speech_seconds)
+        def handle(segment: Segment, parts=None, speech_seconds=None, ends_turn: bool = False) -> None:
+            worker.final(segment, parts, speech_seconds, ends_turn)
 
         # Continuous mode keeps the microphone open. Turn mode keeps the device
         # closed until a turn is taken and closes it again when the turn ends:
@@ -441,13 +495,16 @@ class Pipeline:
                 log.info("turn: %d ms captured, no speech in it", turn_ms)
                 utterance = ring.push(active.origin * 1000 // SAMPLE_RATE, audio)
                 self.emit(NothingRecognized(utterance.index, turn_ms, active.origin / SAMPLE_RATE))
+                if self.peer is not None:
+                    self.peer.release_floor()  # nothing to send, so the floor goes back now
                 return
             (first, last), parts = found
             log.info("turn: %d ms captured, %d ms of speech in %d part(s)", turn_ms,
                      (last - first) * 1000 // SAMPLE_RATE, len(parts))
             # The speech the detector heard, pauses left out (for the guards).
             speech = sum(len(seg.samples) for seg in segments) / SAMPLE_RATE
-            handle(Segment(active.origin + first, audio[first:last], active.origin + first), parts, speech)
+            handle(Segment(active.origin + first, audio[first:last], active.origin + first), parts, speech,
+                   ends_turn=True)
 
         event_level, log_level = LevelMeter(LEVEL_EVENT), LevelMeter(LEVEL_LOG)
         probe.start()
@@ -521,6 +578,8 @@ class Pipeline:
                         if control is not None:
                             control.stop()
                             control.end_turn()
+                        if self.peer is not None:
+                            self.peer.release_floor()
                         self.emit(TurnCancelled())
                 if not mic_open:
                     continue
@@ -718,10 +777,10 @@ class AsrWorker:
 
     # ---- called from the pipeline thread
 
-    def final(self, segment: Segment, parts=None, speech_seconds=None) -> None:
+    def final(self, segment: Segment, parts=None, speech_seconds=None, ends_turn: bool = False) -> None:
         with self._lock:
             self._latest = None  # a provisional pass over an utterance that has ended is stale
-        self.queue.put(("final", segment, parts, speech_seconds, time.monotonic()))
+        self.queue.put(("final", segment, parts, speech_seconds, time.monotonic(), ends_turn))
 
     def partial(self, snapshot: Segment) -> None:
         if self.every_pass:
@@ -760,7 +819,9 @@ class AsrWorker:
                 elif job[0] == "partial":
                     self._partial(job[1])
                 else:
-                    self._final(*job[1:])
+                    self._final(*job[1:5])
+                    if job[5]:
+                        self._turn_ended()
                 for ready in self.holder.due(self.clock()):
                     self._send(*ready)
             except Exception as e:  # one utterance failing must not end recognition
@@ -768,6 +829,17 @@ class AsrWorker:
                 self.pipeline.emit(Error(f"recognition failed: {e}"))
         for ready in self.holder.flush():
             self._send(*ready)
+
+    def _turn_ended(self) -> None:
+        """A turn's utterance has been recognised. Nothing follows it, so a
+        held fragment goes now rather than wait; and in paired mode the floor
+        is handed back behind the turn's last sentence."""
+        for ready in self.holder.flush():
+            self._send(*ready)
+        if self.translation is not None:
+            self.translation.end_of_turn()
+        elif self.pipeline.peer is not None:
+            self.pipeline.peer.release_floor()
 
     def _partial(self, snapshot: Segment) -> None:
         stream = self._stream
@@ -934,16 +1006,25 @@ class AsrWorker:
             self.translation.submit(sentence, source, cut_at)
 
 
+END_OF_TURN = object()  # in the translation queue: the turn's sentences are all before this
+
+
 class TranslationThread:
     """Rust's spawn_translator: its own thread, a small queue."""
 
-    def __init__(self, pipeline: Pipeline, translator, target: str, speaker=None) -> None:
+    def __init__(self, pipeline: Pipeline, translator, target: str, speaker=None, peer=None) -> None:
         self.pipeline = pipeline
         self.translator = translator
         self.target = target
         self.speaker = speaker
+        self.peer = peer  # paired: translations go to the other PC instead of the voice
         py = pipeline.pyconfig.context
         mode = pipeline.options.context if pipeline.options.context is not None else py.mode
+        if peer is not None and mode == "revision":
+            # Only the final translation of a sentence crosses the wire; what
+            # the other PC has shown and spoken can't be taken back.
+            log.info("revision is off while paired")
+            mode = "carry"
         # Carry-forward: each sentence is translated knowing what came before.
         self.history = ctx.History(py.sentences if mode in ("carry", "revision") else 0, py.token_budget)
         # Revision: and the last few are translated again once a new one arrives.
@@ -965,6 +1046,12 @@ class TranslationThread:
             self.pipeline.stats.not_translated += 1
             self.pipeline.emit(NotTranslated(sentence.id, "translation fell behind the conversation"))
 
+    def end_of_turn(self) -> None:
+        """Paired: hand the floor back once everything queued so far has been
+        translated and sent, so the release goes out behind it on the wire."""
+        if self.peer is not None:
+            self.queue.put(END_OF_TURN)
+
     def cancel(self) -> None:
         """Drop what is queued for translation (a cancelled turn)."""
         while True:
@@ -985,6 +1072,9 @@ class TranslationThread:
     def _run(self) -> None:
         stats, emit = self.pipeline.stats, self.pipeline.emit
         while (job := self.queue.get()) is not None:
+            if job is END_OF_TURN:
+                self.peer.release_floor()
+                continue
             sentence, source, cut_at = job
             request = tr.TranslationRequest(sentence.text, source, self.target,
                                             self.history.context(self._count), list(self.pipeline.glossary))
@@ -1012,7 +1102,11 @@ class TranslationThread:
                      sentence.text, self.target, result.text, ms, result.device.upper())
             emit(Translated(sentence.id, result.text, self.target, ms, result.device, self.pipeline.translator_name))
             spoken = self.speaker is not None
-            if spoken:
+            if self.peer is not None:
+                from .peer import Outgoing
+
+                self.peer.deliver(Outgoing(sentence.id, self.target, result.text, source, sentence.text))
+            elif spoken:
                 self.speaker.submit(sentence.id, result.text, self.target, cut_at)
             if self.reviser is not None:
                 self.reviser.add(rev.Done(sentence.id, sentence.text, source, result.text, sentence.end, spoken))
@@ -1083,6 +1177,16 @@ class SpeakThread:
             log.warning("speech is behind; sentence %s not spoken", sentence_id)
             self.pipeline.emit(Error(f"speech fell behind the conversation; sentence {sentence_id} was not spoken"))
 
+    def submit_remote(self, text: str, language: str) -> bool:
+        """Paired: what the other PC sent, in the voice for its language.
+        False when too much is already waiting."""
+        try:
+            self.queue.put_nowait(("", text, language, 0.0))
+            return True
+        except queue.Full:
+            log.warning("speech is behind; an utterance from the other PC was not spoken")
+            return False
+
     def finish(self, wait: bool) -> None:
         if not wait:
             while not self.queue.empty():
@@ -1099,7 +1203,7 @@ class SpeakThread:
         emit = self.pipeline.emit
         while (job := self.queue.get()) is not None:
             sentence_id, text, language, cut_at = job
-            label = f"sentence {sentence_id}"
+            label = f"sentence {sentence_id}" if sentence_id else "an utterance from the other PC"
             try:
                 voice = self._voice(language)
                 began = time.perf_counter()

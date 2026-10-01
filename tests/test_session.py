@@ -204,3 +204,92 @@ def test_stopping_clears_provisional_text():
     s.apply(ev.Partial(3, "hola"))
     s.apply(ev.Stopped())
     assert s.provisional is None
+
+
+# ---------------------------------------------------------------- P9: paired mode (Rust's gui.rs tests)
+
+
+def connected(name: str) -> ev.PeerMsg:
+    return ev.PeerMsg("connected", name=name, addr="192.168.50.2:47800", speaks="en", sends="es")
+
+
+def test_a_paired_turn_waits_for_the_floor_then_runs_as_usual():
+    s = Session()
+    s.begin("es", "en", False, True, True)
+    assert not s.speaks, "paired, the other PC speaks this PC's translations"
+    s.apply(ev.Listening())
+    s.apply(ev.Mode("turn"))
+    s.apply(connected("laptop-b"))
+    s.apply(ev.FloorChanged("asking"))
+    assert s.turn == ses.WAITING, "the microphone is not open yet"
+    assert ses.indicator(s, "Space", False)[0] == "ASKING FOR THE FLOOR..."
+    s.apply(ev.FloorChanged("me"))
+    s.apply(ev.TurnStarted())
+    assert s.turn == ses.RECORDING
+    s.apply(ev.TurnEnded())
+    sid = heard(s, 1, "¿Dónde está la estación?")
+    s.apply(ev.Translated(sid, "Where is the station?", "en", 300, "cpu", "qwen"))
+    assert s.turn == ses.IDLE, "nothing to speak here"
+    s.apply(ev.Sent(sid, "laptop-b"))
+    assert s.row(sid).sent_to == "laptop-b"
+
+
+def test_a_refused_turn_says_why_and_returns_to_ready():
+    s = Session()
+    s.begin("es", "en", False, True, True)
+    s.apply(ev.Mode("turn"))
+    s.apply(connected("laptop-b"))
+    s.apply(ev.FloorChanged("asking"))
+    s.apply(ev.FloorChanged("free"))
+    s.apply(ev.FloorRefused("laptop-b did not answer within 2 s"))
+    assert s.turn == ses.IDLE and "2 s" in s.floor_note
+
+
+def test_a_dropped_connection_clears_the_floor_and_any_wait():
+    s = Session()
+    s.begin("es", "en", False, True, True)
+    s.apply(ev.Mode("turn"))
+    s.apply(connected("laptop-b"))
+    s.apply(ev.FloorChanged("asking"))
+    s.apply(ev.PeerMsg("disconnected", port=47800, reason="laptop-b went silent"))
+    assert s.turn == ses.IDLE and s.floor is None and s.peer.kind == "disconnected"
+
+
+def test_what_the_other_pc_says_gets_its_own_line():
+    s = Session()
+    s.apply(ev.Remote("laptop-b", "es", "¿Dónde está la estación?", "en", "Where is the station?"))
+    assert isinstance(s.lines[0], ses.RemoteLine) and s.lines[0].sender == "laptop-b"
+    s.apply(ev.SpeakingStarted("", 400))  # speaking it touches no local row
+    assert s.speaking and s.rows() == []
+
+
+def test_comparing_never_pairs():
+    s = Session()
+    s.begin("es", "en", True, True, True)
+    assert not s.paired
+
+
+def test_the_indicator_says_when_the_other_pc_is_talking():
+    s = Session()
+    s.begin("es", "en", False, True, True)
+    s.apply(ev.Listening())
+    s.apply(ev.Mode("turn"))
+    s.apply(connected("laptop-b"))
+    s.apply(ev.FloorChanged("them", "laptop-b"))
+    assert ses.indicator(s, "Space", False)[0] == "laptop-b IS TALKING"
+    s.apply(ev.FloorChanged("free"))
+    assert ses.indicator(s, "Space", False)[0].startswith("READY")
+
+
+def test_a_sentence_that_could_not_be_sent_says_so():
+    s = Session()
+    s.begin("es", "en", False, True, True)
+    sid = heard(s, 1, "Hola.")
+    s.apply(ev.Translated(sid, "Hello.", "en", 300, "cpu", "qwen"))
+    s.apply(ev.NotSent(sid, "the connection dropped"))
+    assert s.row(sid).problem == "not sent: the connection dropped"
+
+
+def test_pressing_the_key_again_while_waiting_for_the_floor_takes_the_request_back():
+    assert ses.turn_key_action("toggle", ses.WAITING, ses.KeyEdges(pressed=True), False, True) == ("end", False)
+    assert ses.turn_key_action("toggle", ses.IDLE, ses.KeyEdges(pressed=True), False, True) == ("begin", False)

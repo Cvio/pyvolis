@@ -23,6 +23,7 @@ STOPPED, STARTING, LISTENING = "stopped", "starting", "listening"
 IDLE = "idle"  # waiting for the turn key; the microphone is closed
 RECORDING = "recording"  # a turn is open; the microphone is live
 PROCESSING = "processing"  # the turn has ended; its words are being recognised, translated and spoken
+WAITING = "waiting"  # paired: the floor has been asked for; the microphone is still closed
 
 
 @dataclass
@@ -50,6 +51,7 @@ class Row:
     history: list[str] = field(default_factory=list)  # earlier translations (P8)
     approximate: bool = False  # times shared out by length
     held: bool = False  # a fragment waiting to be joined to what follows
+    sent_to: str | None = None  # paired: the PC its translation reached
 
     kind = "row"
 
@@ -73,6 +75,19 @@ class DroppedLine:
     reasons: list[str]
     start: float = 0.0
     kind = "dropped"
+
+
+@dataclass
+class RemoteLine:
+    """Paired: what the other PC's person said, already translated into this
+    PC's language. `source_text` is what they said, for display only."""
+
+    sender: str
+    lang: str
+    text: str
+    source_lang: str
+    source_text: str
+    kind = "remote"
 
 
 @dataclass
@@ -118,14 +133,23 @@ class Session:
         self._untranslated: set[str] = set()
         self._unspoken: set[str] = set()
         self._recognised = False  # the turn's transcript (or the lack of one) has arrived
+        # Paired mode (P9).
+        self.paired = False  # whether this run is paired with another PC
+        self.peer: ev.PeerMsg | None = None  # the connection, once the peer thread has said
+        self.floor: tuple[str, str] | None = None  # (holder, their name)
+        self.floor_note: str | None = None  # why the last turn asked for did not happen
+        self.discovered: list = []  # other Volis PCs heard on the network: (name, host, port)
 
-    def begin(self, source: str, target: str, comparing: bool, speaks: bool) -> None:
+    def begin(self, source: str, target: str, comparing: bool, speaks: bool, paired: bool = False) -> None:
         """A run is starting with these settings."""
         self.last_error = None
         self.languages = (source, target)
         self.comparing = comparing
-        # Comparing turns speech off.
-        self.speaks = speaks and not comparing
+        self.paired = paired and not comparing
+        # Comparing turns speech off. Paired, the other PC speaks this PC's
+        # translations.
+        self.speaks = speaks and not comparing and not self.paired
+        self.peer, self.floor, self.floor_note = None, None, None
         self.models = {}
         self.progress = None
         self.stats = {}
@@ -253,6 +277,34 @@ class Session:
             self.speaking = False
         elif isinstance(event, ev.ComparisonMsg):
             self._push(ComparisonLine(event.comparison))
+        elif isinstance(event, ev.Remote):
+            self._push(RemoteLine(event.sender, event.lang, event.text, event.source_lang, event.source_text))
+        elif isinstance(event, ev.Sent):
+            if (row := self.row(event.id)) is not None:
+                row.sent_to = event.to
+        elif isinstance(event, ev.NotSent):
+            if (row := self.row(event.id)) is not None:
+                row.problem = f"not sent: {event.reason}"
+        elif isinstance(event, ev.PeerMsg):
+            if event.kind != "connected":
+                self.floor = None
+                if self.turn == WAITING:
+                    self.turn = IDLE
+            self.peer = event
+        elif isinstance(event, ev.FloorChanged):
+            if event.holder == "asking" and self.turn == IDLE:
+                self.turn = WAITING
+            elif event.holder in ("free", "them") and self.turn == WAITING:
+                self.turn = IDLE
+            if event.holder == "me":
+                self.floor_note = None
+            self.floor = (event.holder, event.name)
+        elif isinstance(event, ev.FloorRefused):
+            self.floor_note = event.why
+            if self.turn == WAITING:
+                self.turn = IDLE
+        elif isinstance(event, ev.Discovered):
+            self.discovered = list(event.found)
         elif isinstance(event, ev.Stall):
             self.worst_stall_ms = max(self.worst_stall_ms, event.late_ms)
         elif isinstance(event, ev.Summary):
@@ -265,6 +317,7 @@ class Session:
             self.level_db, self.has_level = None, False
             self.mode = None
             self.provisional = None
+            self.peer, self.floor, self.discovered = None, None, []
             self._reset_turn()
 
     def _end_provisional(self, utterance: int) -> None:
@@ -366,7 +419,8 @@ def turn_key_action(style: str, turn: str, edges: KeyEdges, holding: bool, focus
             return "end", False
         return None, holding
     if edges.pressed:
-        return ("end" if turn == RECORDING else "begin"), False
+        # Pressing again while still waiting for the floor takes back the request.
+        return ("end" if turn in (RECORDING, WAITING) else "begin"), False
     return None, False
 
 
@@ -385,6 +439,12 @@ def indicator(s: Session, key: str, hold: bool, paused: bool = False, file_mode:
             return (f"RECORDING - {'release' if hold else 'press'} {key} to finish"), red
         if s.turn == PROCESSING:
             return ("SPEAKING" if s.speaking else "PROCESSING..."), amber
+        if s.turn == WAITING:
+            return "ASKING FOR THE FLOOR...", amber
+        if s.floor is not None and s.floor[0] == "them":
+            return f"{s.floor[1]} IS TALKING", "#784aa8"
+        if s.speaking:
+            return "SPEAKING", blue
         return f"READY - {'hold' if hold else 'press'} {key} to talk", slate
     if s.comparing:
         return "COMPARING", amber

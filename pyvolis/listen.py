@@ -24,6 +24,11 @@ def run(root: Path, config: Config, seconds: float | None, options: Options) -> 
     if config.mode.kind != "continuous":
         log.info("--listen listens continuously; turn-taking is in the window")
         config = dataclasses.replace(config, mode=dataclasses.replace(config.mode, kind="continuous"))
+    # Paired mode is in the window too: pairing needs a Connect button and a
+    # turn key, and a terminal has neither.
+    if config.peer.enabled:
+        log.info("--listen does not pair; paired mode is in the window")
+        options = dataclasses.replace(options, pair=False)
     if config.peer.enabled:
         log.info("--listen does not pair; paired mode is in the window")
         config = dataclasses.replace(config, peer=dataclasses.replace(config.peer, enabled=False))

@@ -39,6 +39,7 @@ from ..config import Config, ConfigError, PyvolisConfig, save_pyvolis_selections
 from ..filesource import FileSourceError, read_16k_mono
 from ..pipeline import CONTINUOUS, TURN, ArraySource, Collected, Options, Pipeline
 from ..translate.context import parse_glossary
+from .. import peer as peer_mod
 from . import session as ses
 
 log = logging.getLogger(__name__)
@@ -182,6 +183,8 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         for widget in (self.start_button, self.pause_button, self.indicator):
             top.addWidget(widget)
+        self.pair_label = QLabel()
+        top.addWidget(self.pair_label)
         top.addStretch(1)
         top.addWidget(QLabel("Microphone"))
         top.addWidget(self.meter)
@@ -240,6 +243,40 @@ class MainWindow(QMainWindow):
         self.glossary = QLineEdit()
         self.glossary.setPlaceholderText("Names and terms to keep exactly, separated by commas")
         self.glossary.editingFinished.connect(self.glossary_changed)
+        self.pair = QCheckBox("Pair with another PC")
+        self.pair.setToolTip("Two PCs, one conversation. Each translates what its own person says and sends only "
+                             "the text; the other PC shows it and speaks it. Works with Rust volis too.")
+        self.pair.toggled.connect(self.pair_changed)
+        self.peer_me = QLabel()
+        self.peer_me.setWordWrap(True)
+        self.peer_me.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.peer_input = QLineEdit(self.config.peer.peer_addr)
+        self.peer_input.setPlaceholderText("the other PC's address, e.g. 192.168.50.2")
+        self.peer_input.returnPressed.connect(self.connect_peer)
+        self.connect_button = QPushButton("Connect")
+        self.connect_button.clicked.connect(self.connect_or_disconnect)
+        self.found_box = QVBoxLayout()
+        self.found_box.setContentsMargins(0, 0, 0, 0)
+        self._found_shown: list = []
+        self.peer_status = QLabel()
+        self.peer_status.setWordWrap(True)
+        self.peer_status.setTextFormat(Qt.TextFormat.RichText)
+        self.peer_box = QWidget()
+        peer_layout = QVBoxLayout(self.peer_box)
+        peer_layout.setContentsMargins(18, 0, 0, 0)
+        peer_layout.addWidget(self.peer_me)
+        dial = QHBoxLayout()
+        dial.addWidget(self.peer_input, 1)
+        dial.addWidget(self.connect_button)
+        peer_layout.addLayout(dial)
+        peer_layout.addLayout(self.found_box)
+        peer_layout.addWidget(self.peer_status)
+        self.headsets = QLabel("Headsets required. Paired and listening continuously, both microphones and both "
+                               "speakers are live: without headsets the two PCs hear and translate each other in "
+                               "a loop. Take turns instead to use speakers.")
+        self.headsets.setWordWrap(True)
+        self.headsets.setStyleSheet("background: #96281e; color: white; font-size: 12pt; padding: 10px; "
+                                    "border-radius: 8px")
         self.mode_turn = QRadioButton("Take turns")
         self.mode_continuous = QRadioButton("Listen continuously")
         key = self.config.mode.turn_key
@@ -272,6 +309,8 @@ class MainWindow(QMainWindow):
         form.addRow(self.revise)
         form.addRow(self.hold_fragments)
         form.addRow("Glossary", self.glossary)
+        form.addRow(self.pair)
+        form.addRow(self.peer_box)
         self.memory = QLabel()
         self.memory.setWordWrap(True)
         form.addRow(self.memory)
@@ -283,7 +322,7 @@ class MainWindow(QMainWindow):
         self.locked_while_running = [self.source_lang, self.target_lang, self.recognizer, self.translator,
                                      self.input_device, self.output_device, self.speak, self.half_duplex,
                                      self.compare, self.streaming, self.use_context, self.revise,
-                                     self.hold_fragments]
+                                     self.hold_fragments, self.pair]
         for widget in (self.streaming, self.use_context, self.revise, self.hold_fragments):
             widget.toggled.connect(self.save)
         for widget in (self.mode_turn, self.mode_continuous, self.style_toggle, self.style_hold):
@@ -326,6 +365,7 @@ class MainWindow(QMainWindow):
         body = QHBoxLayout()
         body.addWidget(settings)
         right = QVBoxLayout()
+        right.addWidget(self.headsets)
         right.addWidget(self.table, 1)
         right.addWidget(self.progress)
         body.addLayout(right, 1)
@@ -375,6 +415,9 @@ class MainWindow(QMainWindow):
             _select(combo, chosen)
         self.speak.setChecked(self.config.tts.enabled)
         self.half_duplex.setChecked(self.config.tts.half_duplex)
+        self.pair.setChecked(self.config.peer.enabled)
+        self.my_name = peer_mod.display_name(self.config.peer.display_name)
+        self.addresses = peer_mod.local_addresses()
         self.streaming.setChecked(self.pyconfig.asr.streaming)
         self.use_context.setChecked(self.pyconfig.context.mode in ("carry", "revision"))
         self.revise.setChecked(self.pyconfig.context.mode == "revision")
@@ -426,6 +469,49 @@ class MainWindow(QMainWindow):
             self.pipeline.set_mode(kind)
         self.save()
         self.refresh()
+
+    def pair_changed(self) -> None:
+        if getattr(self, "_filling", True):
+            return
+        self.addresses = peer_mod.local_addresses()  # a cable may have been plugged in since
+        self.save()
+        self.refresh()
+
+    def pairing(self) -> bool:
+        """Whether a run started now would pair: ticked, the microphone, and
+        not a comparison."""
+        return self.pair.isChecked() and not self.source_file.isChecked() and not self.compare.isChecked()
+
+    def can_connect(self) -> bool:
+        """Whether Connect can be pressed: running, and listening."""
+        state = self.session.peer
+        return self.running() and state is not None and state.kind in ("waiting", "disconnected")
+
+    def connect_or_disconnect(self) -> None:
+        state = self.session.peer
+        if state is not None and state.kind in ("connected", "connecting"):
+            if self.pipeline is not None:
+                self.pipeline.disconnect()
+        else:
+            self.connect_peer()
+
+    def connect_peer(self, typed: str | None = None) -> None:
+        if typed:
+            self.peer_input.setText(typed)
+        if not self.can_connect():
+            return
+        try:
+            address = peer_mod.parse_address(self.peer_input.text())
+        except peer_mod.AddressError as e:
+            self.session.last_error = str(e)
+            self.refresh()
+            return
+        self.session.last_error = None
+        typed = self.peer_input.text().strip()
+        if self.config.peer.peer_addr != typed:
+            self.config.peer.peer_addr = typed
+            self.save()
+        self.pipeline.connect(address)
 
     def glossary_changed(self) -> None:
         """The glossary applies from the next sentence, even mid-run. It is
@@ -488,6 +574,7 @@ class MainWindow(QMainWindow):
         if not self.source_file.isChecked():
             c.tts.enabled = self.speak.isChecked()
         c.tts.half_duplex = self.half_duplex.isChecked()
+        c.peer.enabled = self.pair.isChecked()
         self.pyconfig.translate.model = self.translator.currentData() or ""
         self.pyconfig.asr.streaming = self.streaming.isChecked()
         self.pyconfig.context.mode = self.context_mode()
@@ -513,7 +600,8 @@ class MainWindow(QMainWindow):
 
     def _begin(self, source, speak: bool) -> None:
         comparing = self.compare.isChecked()
-        self.session.begin(self.config.languages.source, self.config.languages.target, comparing, speak)
+        paired = self.pairing() and source is None
+        self.session.begin(self.config.languages.source, self.config.languages.target, comparing, speak, paired)
         self.session.clear()
         self.collected = Collected()
         self.scores = ""
@@ -522,7 +610,7 @@ class MainWindow(QMainWindow):
         self.paused = False
         ev.restart_clock()
         self.events = queue.Queue()
-        self.options = Options(compare=comparing, translate=not comparing, speak=speak,
+        self.options = Options(compare=comparing, translate=not comparing, speak=speak, pair=paired,
                                mt=self.translator.currentData() or "",
                                glossary=parse_glossary(self.glossary.text()))
         self.pipeline = Pipeline(self.root, dataclasses.replace(self.config), self.options, self.events, source,
@@ -687,7 +775,14 @@ class MainWindow(QMainWindow):
         self.pause_button.setText("Resume" if self.paused else "Pause")
         for widget in self.locked_while_running:
             widget.setEnabled(not running)
-        self.revise.setEnabled(not running and self.use_context.isChecked())  # revision builds on context
+        # Revision builds on context, and is off while paired: what the other
+        # PC has shown and spoken can't be taken back.
+        pairing = self.pairing()
+        self.revise.setEnabled(not running and self.use_context.isChecked() and not pairing)
+        self.revise.setText("Revise earlier translations when what follows changes them"
+                            + (" (off while paired)" if pairing else ""))
+        self.pair.setEnabled(not running and not file_mode)
+        self._draw_peer(running)
         self.mode_box.setEnabled(not file_mode)
         self.style_box.setEnabled(self.mode_turn.isChecked())
         for widget in (self.open_button, self.realtime, self.fast, self.play_original, self.source_live, self.source_file):
@@ -745,6 +840,83 @@ class MainWindow(QMainWindow):
         self.status.setText("\n".join(x for x in (line, self.scores) if x))
         self.error.setText(s.last_error or "")
         self.error.setVisible(bool(s.last_error))
+
+    def _draw_peer(self, running: bool) -> None:
+        """The peer panel: this PC's addresses for the other person to type,
+        the connection in words, who holds the floor, and the two warnings
+        that must never be missed (not paired; headsets)."""
+        s, state = self.session, self.session.peer
+        self.peer_box.setVisible(self.pair.isChecked())
+        port = peer_mod.DEFAULT_PORT
+        try:
+            port = peer_mod.parse_address(self.config.peer.listen_addr).port
+        except peer_mod.AddressError:
+            pass
+        lines = [f"<b>This PC: {escape(self.my_name)}</b>"]
+        if not self.addresses:
+            lines.append("<span style='color:#dc5a46'>No network connection. Plug in a cable or join a network.</span>")
+        for interface, address in self.addresses:
+            shown = address if port == peer_mod.DEFAULT_PORT else f"{address}:{port}"
+            note = " (no router)" if address.startswith("169.254.") else ""
+            lines.append(f"<tt>{shown}</tt> <span style='color:gray'>{escape(interface)}{note}</span>")
+        lines.append("<span style='color:gray'>The other PC types one of these."
+                     + ("" if running else " Press Start on both PCs, then Connect on either one.") + "</span>")
+        self.peer_me.setText("<br>".join(lines))
+        busy = state is not None and state.kind in ("connected", "connecting")
+        self.connect_button.setText("Disconnect" if busy else "Connect")
+        self.connect_button.setEnabled(busy or self.can_connect())
+        self.peer_input.setEnabled(not busy)
+
+        found = [] if busy else list(s.discovered)
+        if found != self._found_shown:
+            self._found_shown = found
+            while self.found_box.count():
+                self.found_box.takeAt(0).widget().deleteLater()
+            for name, host, their_port in found:
+                typed = host if their_port == peer_mod.DEFAULT_PORT else f"{host}:{their_port}"
+                button = QPushButton(f"Found: {name} - {host}")
+                button.clicked.connect(lambda _=False, typed=typed: self.connect_peer(typed))
+                self.found_box.addWidget(button)
+
+        good, bad = "#5abe6e", "#dc5a46"
+        text = ""
+        if state is None:
+            text = "Starting..." if running and s.paired else ""
+        elif state.kind == "waiting":
+            text = f"Listening on port {state.port}. Waiting for the other PC to connect, or connect to it."
+        elif state.kind == "connecting":
+            text = f"Connecting to {escape(state.addr)}..."
+        elif state.kind == "connected":
+            text = (f"<b style='color:{good}'>Paired with {escape(state.name)} ({escape(state.addr.rsplit(':', 1)[0])})</b>"
+                    f"<br>They speak {escape(varieties.display_name(state.speaks))}; what they say arrives here in "
+                    f"{escape(varieties.display_name(state.sends))}.")
+            if s.mode == TURN:
+                holder, name = s.floor or ("free", "")
+                floor = {"me": "yours", "them": f"{escape(name)}'s", "asking": "asking..."}.get(holder, "free")
+                text += f"<br>Floor: {floor}"
+        elif state.kind == "disconnected":
+            text = f"<b style='color:{bad}'>Not connected</b><br><span style='color:{bad}'>{escape(state.reason)}</span>"
+        elif state.kind == "unavailable":
+            text = (f"<b style='color:{bad}'>Pairing is unavailable</b><br>"
+                    f"<span style='color:{bad}'>{escape(state.reason)}</span>")
+        if s.floor_note:
+            text += f"<br><span style='color:#dca028'>{escape(s.floor_note)}</span>"
+        self.peer_status.setText(text)
+
+        # Paired or not, visible from anywhere in the window: a dropped
+        # connection must never look like a quiet one.
+        self.pair_label.setVisible(s.paired and running)
+        if state is not None and state.kind == "connected":
+            self.pair_label.setText(f"Paired with {state.name}")
+            self.pair_label.setStyleSheet(f"font-size: 12pt; color: {good}")
+        elif state is not None and state.kind == "connecting":
+            self.pair_label.setText("Connecting...")
+            self.pair_label.setStyleSheet("font-size: 12pt")
+        else:
+            self.pair_label.setText("Not paired")
+            self.pair_label.setStyleSheet(f"font-size: 12pt; color: {bad}")
+        # Continuous and paired together: said for as long as it is true, not once.
+        self.headsets.setVisible(s.paired and s.mode == CONTINUOUS and running)
 
     def _draw_lines(self) -> None:
         """Rows already drawn are updated in place; new lines are appended."""
@@ -804,6 +976,8 @@ class MainWindow(QMainWindow):
                 notes.append(f"revised x{len(line.history)}")
             if line.translate_ms is not None:
                 notes.append(f"{line.translate_ms} ms")
+            if line.sent_to:
+                notes.append(f"sent to {line.sent_to}")
             cells = [ses.clock(line.start), line.source, line.target or (line.problem or ""), ", ".join(notes)]
             self._set(index, cells, span=(line.start, line.end))
             if line.problem and not line.target:
@@ -816,6 +990,9 @@ class MainWindow(QMainWindow):
                 if fresh:
                     item.setForeground(QBrush(REVISED_TEXT))
                 item.setToolTip("Earlier: " + " | ".join(line.history))
+        elif line.kind == "remote":
+            # What the other PC's person said, and what it means here.
+            self._set(index, ["<<", line.source_text, line.text, f"from {line.sender}"])
         elif line.kind == "nothing":
             self._set(index, [ses.clock(line.start), f"(speech with no words, {line.speech_ms} ms)", "", ""], muted=True)
         elif line.kind == "dropped":

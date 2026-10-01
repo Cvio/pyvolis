@@ -274,3 +274,71 @@ class Stall(Event):
 
 RECOGNITION = (Partial, Final, NothingRecognized, Dropped)
 TRANSLATION = (SentenceMsg, Held, Translated, NotTranslated, Revised)
+
+
+# ---------------------------------------------------------------- paired mode (P9)
+
+
+@dataclass
+class PeerMsg(Event):
+    """The connection to the other PC changed. `kind`: "waiting" (listening,
+    not connected), "connecting", "connected", "disconnected" (was, or tried
+    to be; still listening) or "unavailable" (the port could not be opened)."""
+
+    kind: str
+    port: int = 0
+    addr: str = ""  # "ip:port" of the other PC
+    name: str = ""
+    speaks: str = ""
+    sends: str = ""
+    reason: str = ""
+
+
+@dataclass
+class FloorChanged(Event):
+    """Who holds the floor: "free", "asking", "me" or "them" (with their name)."""
+
+    holder: str
+    name: str = ""
+
+
+@dataclass
+class FloorRefused(Event):
+    """A turn was asked for and did not happen, and why. The microphone stayed closed."""
+
+    why: str
+
+
+@dataclass
+class Remote(Event):
+    """An utterance from the other PC, already translated into this PC's
+    language. `source_text` is for display only."""
+
+    sender: str
+    lang: str
+    text: str
+    source_lang: str
+    source_text: str
+
+
+@dataclass
+class Sent(Event):
+    """A local translation reached the other PC."""
+
+    id: str
+    to: str
+
+
+@dataclass
+class NotSent(Event):
+    """A local translation did not reach the other PC, and why."""
+
+    id: str
+    reason: str
+
+
+@dataclass
+class Discovered(Event):
+    """Other Volis PCs heard on the local network: (name, host, port) each."""
+
+    found: list

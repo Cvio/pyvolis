@@ -164,3 +164,83 @@ def test_the_revise_box_builds_on_context(window):
     window.use_context.setChecked(True)
     window.revise.setChecked(False)
     assert window.revise.isEnabled() and window.context_mode() == "carry"
+
+
+# ---------------------------------------------------------------- P9: the peer panel
+
+
+def test_the_peer_panel_shows_this_pcs_addresses_and_the_connection(window):
+    window.addresses = [("Ethernet", "169.254.49.46"), ("Wi-Fi", "192.168.1.156")]
+    window.my_name = "laptop-a"
+    window.pair.setChecked(True)
+    window.refresh()
+    text = window.peer_me.text()
+    assert "laptop-a" in text and "192.168.1.156" in text and "169.254.49.46" in text and "(no router)" in text
+    assert not window.connect_button.isEnabled(), "nothing to connect with until a run is listening"
+
+    window.session.begin("es", "en", False, True, True)
+    window.pipeline = object()  # running
+    feed(window, ev.Listening(), ev.Mode("turn"), ev.PeerMsg("waiting", port=47800))
+    assert "Listening on port 47800" in window.peer_status.text() and window.connect_button.isEnabled()
+    assert window.pair_label.text() == "Not paired"
+
+    feed(window, ev.PeerMsg("connected", name="laptop-b", addr="192.168.1.20:47800", speaks="en", sends="es-MX"),
+         ev.FloorChanged("them", "laptop-b"))
+    status = window.peer_status.text()
+    assert "Paired with laptop-b (192.168.1.20)" in status and "Floor: laptop-b's" in status
+    assert "Mexican Spanish" in status or "Spanish" in status
+    assert window.pair_label.text() == "Paired with laptop-b" and window.connect_button.text() == "Disconnect"
+    assert "laptop-b IS TALKING" in window.indicator.text()
+
+    feed(window, ev.Remote("laptop-b", "es-MX", "¿Dónde está la estación?", "en", "Where is the station?"))
+    assert cells(window, 0) == ["<<", "Where is the station?", "¿Dónde está la estación?", "from laptop-b"]
+
+    feed(window, ev.PeerMsg("disconnected", port=47800, reason="laptop-b went silent: nothing heard for 6 s."))
+    assert "Not connected" in window.peer_status.text() and "went silent" in window.peer_status.text()
+    assert window.pair_label.text() == "Not paired"
+    window.pipeline = None
+
+
+def test_paired_and_continuous_says_headsets_for_as_long_as_it_is_true(window):
+    window.pair.setChecked(True)
+    window.session.begin("es", "en", False, True, True)
+    window.pipeline = object()
+    feed(window, ev.Listening(), ev.Mode("continuous"))
+    assert not window.headsets.isHidden() and "Headsets required" in window.headsets.text()
+    feed(window, ev.Mode("turn"))
+    assert window.headsets.isHidden()
+    window.pipeline = None
+
+
+def test_revision_is_off_while_paired_and_the_window_says_so(window):
+    window.use_context.setChecked(True)
+    window.pair.setChecked(True)
+    window.refresh()
+    assert not window.revise.isEnabled() and "off while paired" in window.revise.text()
+    window.pair.setChecked(False)
+    window.refresh()
+    assert window.revise.isEnabled() and "off while paired" not in window.revise.text()
+
+
+def test_a_name_is_never_dialled(window):
+    window.pair.setChecked(True)
+    window.session.begin("es", "en", False, True, True)
+    dialled = []
+
+    class FakePipeline:
+        def connect(self, address):
+            dialled.append(address)
+
+        def stop(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    window.pipeline = FakePipeline()
+    feed(window, ev.Listening(), ev.PeerMsg("waiting", port=47800))
+    window.connect_peer("laptop-b.local")
+    assert dialled == [] and "never looked up" in window.session.last_error
+    window.connect_peer("192.168.1.20")
+    assert [str(a) for a in dialled] == ["192.168.1.20:47800"]
+    window.pipeline = None

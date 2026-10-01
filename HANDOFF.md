@@ -46,7 +46,12 @@ Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
 - **P8 done:** revision mode (`translate/revision.py`, `[context] mode = "revision"`, the
   window's "Revise earlier translations" box, `--context revision`), with its limits. Checked
   by `scripts/p8_check.py`; numbers under "P8 findings".
-- Next: P9 (paired mode, including with Rust volis). Wait for the go-ahead.
+- **P9 done:** paired mode. `wire.py`, `floor.py`, `discovery.py` and `peer.py` are ports of
+  the Rust modules, protocol version 2 unchanged; the pipeline routes a paired run's
+  translations to the other PC and speaks what arrives; the window has the peer panel.
+  Checked with pyvolis at both ends (`tests/test_peer.py`, `tests/test_paired.py`) and against
+  the real `volis.exe` (`scripts/pair_check.py`, 12 of 12). See "P9 findings".
+- Next: P10 (shared-machine mode, a recognizer per side, varieties). Wait for the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -250,6 +255,43 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     (`source_lang_code` in it) and gives it what it asks for; the prompt file and the glossary
     are not used with such a model, context still is. A variety its table lacks (en-US) is
     sent as the bare language.
+50. **A turn crosses the wire sentence by sentence.** Rust sends one `Utterance` per turn;
+    pyvolis translates per sentence, so it sends one `Utterance` per sentence (the same
+    message, more of them) and releases the floor behind the last. A marker in the translation
+    queue (`END_OF_TURN`) keeps that order. Rust shows and speaks each as it arrives.
+51. **Context stays local and revision is off while paired,** as the build file says: only
+    the final translation of a sentence is sent. `[context] mode = "revision"` runs as
+    "carry" in a paired run, and the window's box says "(off while paired)".
+52. **A turn's last fragment is no longer held.** A short unpunctuated sentence at the end of
+    a turn used to wait 1.5 s for something to join; nothing can follow the end of a turn, so
+    it now goes at once (paired or not). Found while placing the floor release.
+53. **Network interfaces come from psutil** (Rust uses the `if_addrs` crate); it was already
+    installed as another package's dependency and is now declared. IPv4 addresses only in the
+    peer panel; Rust also lists routable IPv6 ones. Typing an IPv6 address works.
+54. **`SO_EXCLUSIVEADDRUSE` on the listener:** on Windows two programs can otherwise bind the
+    same port and each get some of the connections. With it, a second Volis on the same port
+    is told pairing is unavailable, as Rust's bind error does.
+55. **A file run never pairs** (Rust has no file mode), and neither does `--listen` or a
+    comparison, as in Rust.
+
+## P9 findings
+
+- `scripts/pair_check.py` against `volis.exe` (its window, since Rust's `--listen` never
+  pairs; two clicks in it, Start and Connect): pyvolis dials Rust and both name the other;
+  Rust grants the floor and only then does the microphone open; a sentence from pyvolis
+  arrives in Rust with its original; Rust hears Spanish through the cable and its translation
+  arrives in pyvolis with the original; the pyvolis end killed with no goodbye, and Rust says
+  "pyvolis closed the connection"; Rust dials pyvolis and they pair; Rust killed while
+  pyvolis holds the floor, and pyvolis says "rust-volis dropped the connection", releases the
+  floor and closes the microphone. 12 of 12.
+- The clicks in the Rust window were made by Claude through desktop automation, not by the
+  user. Not tested: two real machines on a cable or switch, the firewall diagnostic against a
+  real firewall, discovery between two machines (two programs on one PC can't both open UDP
+  47801, so on one PC only one of them announces), and a real conversation with voices.
+- What is encoded is byte for byte what serde writes for the same message
+  (`tests/test_wire.py`), and the decoder refuses what serde refuses (negative or fractional
+  `seq`, a missing field, a non-string) plus half a surrogate pair, which Python's JSON parser
+  accepts and UTF-8 cannot hold.
 
 ## Translator comparison (2026-10-01, `scripts/mt_bench.py`)
 

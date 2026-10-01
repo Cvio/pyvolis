@@ -4,10 +4,11 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P8 of `pyvolis-build.md`. pyvolis has its window: live translation from the
+Status: milestone P9 of `pyvolis-build.md`. pyvolis has its window: live translation from the
 microphone, taking turns or listening continuously, with voice output; file mode with a
 timeline and export; text shown while you speak, and translation that knows what was said
-before. Pairing and the shared machine arrive at P9 and P10.
+before; and two PCs can pair, with pyvolis or Rust volis at either end. The shared machine
+arrives at P10.
 
 ## Setup (development)
 
@@ -84,6 +85,16 @@ while it runs:
 Each sentence and its translation is shown, and the translation spoken. Half-duplex mutes the
 microphone while pyvolis speaks; turn it off only with headphones. `--listen` on the command
 line always listens continuously.
+
+**Pair with another PC:** two PCs, one conversation. Each translates what its own person says
+and sends only the text; the other PC shows it and speaks it. Tick the box on both, press
+Start on both, then on either one type the address the other shows under "This PC" (or pick it
+from "Found") and press Connect. It works with Rust volis at the other end. Taking turns, a
+press of the turn key asks the other PC for the floor and the microphone opens only when it
+answers; the indicator says when the other person is talking. Listening continuously while
+paired needs headsets, and the window says so in red for as long as it is true. If the link
+drops, both ends say why and the floor is released. Only IP addresses are accepted: a name
+would have to be looked up, and pyvolis never does that. Revision is off while paired.
 
 **File** mode: open a recording (File > Open, or drop it on the window), choose Real time or
 Fast, and Start. Each row is a sentence; clicking a row plays that stretch of the recording.
@@ -177,6 +188,10 @@ model = ""          # as --report lists it; "" = the .gguf at the top of models\
 prompt = "default"  # a file in prompts\; "rust" = exactly what Rust volis sends
 device = "auto"     # "auto" = the GPU if the GPU build is installed, "cpu", or "cuda"
 ```
+
+Pairing is set in `volis.toml`, shared with Rust volis: `[peer] enabled`, `listen_addr`
+(default `0.0.0.0:47800`; two programs on one PC need different ports), `peer_addr` (the last
+address typed), `display_name` (default: the computer's name) and `discovery`.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pyvolis --devices        # names for [audio] in volis.toml

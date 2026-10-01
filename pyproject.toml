@@ -35,6 +35,8 @@ dependencies = [
     "jinja2",
     # chrF for the quick scores, the implementation model-bench uses.
     "sacrebleu",
+    # Network interfaces and their addresses, for paired mode (peer panel, discovery).
+    "psutil>=7",
 ]
 
 [project.scripts]
