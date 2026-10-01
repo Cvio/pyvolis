@@ -142,14 +142,16 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
   passes Silero, and Whisper answers it with invented text: once "¡Suscríbete al canal!"
   (dropped by the stock-phrase guard), once a lone "y" that no guard catches. A possible fourth
   guard, for the user to decide: text implausibly short for the length of the segment.
-- **Persian ("fa")** is in model cards, MMS and the fixtures but not in the varieties table
-  shared with Rust, so a side can't be set to Persian in either app yet.
+- **Persian ("fa")** was missing from the varieties table; added in both apps (below).
 
-## Rust behaviour ported as it is, for the user to decide
+## Changes made in Rust volis too, by the user's decision
 
-- **`VOICE_NOTE_LEFT` in `config.rs`** carries the source indentation into the file: when
-  `left_voice` is added to a `volis.toml` that lacks it, the second comment line is written with
-  31 leading spaces. pyvolis writes the same bytes. It only happens when the key was missing.
-- (Fixed in Rust by the user's decision, 2026-09-30: the dialect sentence of the translation
-  prompt read "aloud,using" and carried indentation and trailing spaces. P3 will match the
-  fixed prompt.)
+- 2026-09-30: the translation prompt's dialect sentence read "aloud,using" and carried
+  indentation and trailing spaces; fixed in `translate.rs`.
+- 2026-09-30: `VOICE_NOTE_LEFT` in `config.rs` wrote its second comment line with 31 leading
+  spaces; fixed, with a test, in both apps.
+- 2026-09-30: Persian added to the varieties table in both apps: `fa` (Persian) and `fa-IR`
+  (Persian (Iran), "Iranian Persian" in the prompt).
+
+The Rust changes are left uncommitted for the user to review and commit, and `volis.exe` is
+not rebuilt (Rust volis doesn't know `fa` until it is).

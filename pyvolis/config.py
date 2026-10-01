@@ -309,13 +309,11 @@ def _check_type(section: str, key: str, default: Any, value: Any) -> Any:
 
 
 # The comments written above the voice keys when they are added, because which
-# voice each key means is easy to get backwards. Byte-for-byte Rust's
-# VOICE_NOTE_LEFT/RIGHT, including the indentation Rust's string literal
-# carries into the second line of the left note (see HANDOFF.md).
+# voice each key means is easy to get backwards. Byte for byte Rust's
+# VOICE_NOTE_LEFT/RIGHT.
 VOICE_NOTE_LEFT = (
     "# left_voice speaks what the LEFT person said, so it is a voice in the RIGHT\n"
-    "                               # person's language. A folder name under models/tts/;"
-    " empty = first match.\n"
+    "# person's language. A folder name under models/tts/; empty = first match.\n"
 )
 VOICE_NOTE_RIGHT = "# right_voice speaks what the RIGHT person said, in the LEFT person's language.\n"
 

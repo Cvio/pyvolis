@@ -35,6 +35,7 @@ def test_an_unknown_tag_is_an_error_not_a_fallback():
 
 def test_a_language_lists_only_its_own_varieties():
     assert [row.tag for row in v.varieties_of("ar")] == ["ar-IQ", "ar-JO"]
+    assert [row.tag for row in v.varieties_of("fa")] == ["fa-IR"]
     assert v.varieties_of("de") == []
 
 
@@ -42,6 +43,6 @@ def test_the_table_matches_rust():
     """The same tags, in the same order, as src/varieties.rs, which both apps'
     shared volis.toml depends on. Update both together."""
     assert [row.tag for row in v.TABLE] == [
-        "en", "en-US", "es", "es-MX", "es-ES", "ar", "ar-IQ", "ar-JO",
+        "en", "en-US", "es", "es-MX", "es-ES", "ar", "ar-IQ", "ar-JO", "fa", "fa-IR",
         "de", "fr", "it", "pt", "ru",
     ]

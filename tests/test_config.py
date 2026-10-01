@@ -146,6 +146,7 @@ def test_saving_adds_the_shared_section_with_the_voice_keys_explained(tmp_path):
     assert "[shared]" in saved
     assert 'kind = "shared"' in saved
     assert saved.count("left_voice speaks what the LEFT person said") == 1
+    assert "RIGHT\n# person's language." in saved, "the note's second line starts at the margin"
     reloaded = Config.parse(saved)
     assert reloaded.shared.right_voice == "vits-piper-en_US-lessac-medium"
     assert reloaded.mode.kind == "shared"

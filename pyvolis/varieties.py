@@ -30,6 +30,8 @@ TABLE: tuple[Variety, ...] = (
     Variety("ar", "Arabic", "Arabic"),
     Variety("ar-IQ", "Arabic (Iraq)", "Iraqi Arabic"),
     Variety("ar-JO", "Arabic (Jordan)", "Jordanian Arabic"),
+    Variety("fa", "Persian", "Persian"),
+    Variety("fa-IR", "Persian (Iran)", "Iranian Persian"),
     # Languages the translation prompt already knew by name, kept so they
     # don't stop working. They have no varieties yet.
     Variety("de", "German", "German"),
@@ -86,8 +88,7 @@ def display_name(tag: str) -> str:
 
 
 # ISO 639-3 codes for the languages above, for models that name languages that
-# way (MMS's adapters: "spa", "eng", "ara", "fas"). Persian is here though the
-# table above doesn't list it yet: MMS and the FLEURS fixtures use it.
+# way (MMS's adapters: "spa", "eng", "ara", "fas").
 ISO639_3 = {
     "en": "eng", "es": "spa", "ar": "ara", "fa": "fas", "de": "deu",
     "fr": "fra", "it": "ita", "pt": "por", "ru": "rus",
