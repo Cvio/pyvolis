@@ -4,11 +4,11 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P9 of `pyvolis-build.md`. pyvolis has its window: live translation from the
+Status: milestone P10 of `pyvolis-build.md`. pyvolis has its window: live translation from the
 microphone, taking turns or listening continuously, with voice output; file mode with a
 timeline and export; text shown while you speak, and translation that knows what was said
-before; and two PCs can pair, with pyvolis or Rust volis at either end. The shared machine
-arrives at P10.
+before; two PCs can pair, with pyvolis or Rust volis at either end; and two people can share
+one machine, a key each.
 
 ## Setup (development)
 
@@ -73,7 +73,7 @@ listed as "languages unknown" and offered for every language.
 
 Pick what is spoken and what to translate into; the recognizer list is ordered for that
 language (tuned for the variety, general, other varieties, then models that don't say which
-languages they know). **Start** then waits for you, in one of two modes, which you can switch
+languages they know). **Start** then waits for you, in one of three modes, which you can switch
 while it runs:
 
 - **Take turns:** the microphone is closed until you press Space; press again to finish (or
@@ -81,6 +81,16 @@ while it runs:
   when it ends. Taking a new turn cuts off a reply that is still being spoken. The key works
   while the window has focus, and never also clicks the button that has focus.
 - **Listen continuously:** hands-free; every pause ends an utterance.
+- **Shared machine:** two people who speak different languages, one PC, a key each (the left
+  and right arrows; `[shared] left_key` / `right_key` in `volis.toml`). Press your key, speak,
+  press it again: your words are spoken in the other person's language. Each side has its own
+  language (or regional variety), its own recognizer ("Heard by": any model that covers the
+  language, a downloaded one included) and the voice its words are spoken in ("Spoken by": a
+  voice in the other person's language). One person at a time: during a turn the other key
+  does nothing, and while a reply is worked on or spoken neither does. **Escape** cancels a
+  turn or silences what it produced. The active side fills with colour and a heavy border, and
+  a side that can't take a turn says why in its column. The arrow keys belong to a text box
+  while one has the focus; click anywhere else to give them back. Not while paired.
 
 Each sentence and its translation is shown, and the translation spoken. Half-duplex mutes the
 microphone while pyvolis speaks; turn it off only with headphones. `--listen` on the command

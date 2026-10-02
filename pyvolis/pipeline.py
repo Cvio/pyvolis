@@ -49,10 +49,11 @@ from .audio import SAMPLE_RATE
 from .config import Config, PyvolisConfig
 from .asr.streaming import LocalAgreement
 from .events import (  # noqa: F401 - re-exported for consumers
-    ComparisonMsg, Dropped, Error, Event, Final, Held, Level, Listening, Loading, Mode, ModelLoaded, Revised,
+    ComparisonMsg, Dropped, Error, Event, Final, Held, Level, Listening, Loading, Mode, ModelLoaded, Revised, SharedSide,
     NothingRecognized, NotTranslated, Partial, Progress, SentenceMsg, SpeakingEnded, SpeakingStarted,
     SpeechStarted, Stall, Stopped, Summary, Translated, TurnCancelled, TurnEnded, TurnStarted,
 )
+from . import shared as shared_mod
 from .translate import context as ctx
 from .translate import revision as rev
 from .ring import UtteranceRing
@@ -70,18 +71,33 @@ LEVEL_LOG = 5.0  # seconds between level lines in the log (Rust's LEVEL_LOG)
 # below that, transcribed in order and joined.
 MAX_PART = 25 * SAMPLE_RATE
 
-CONTINUOUS, TURN = "continuous", "turn"
+CONTINUOUS, TURN, SHARED = "continuous", "turn", "shared"
 
 
 @dataclass(frozen=True)
 class Command:
     """What a consumer asks of a running pipeline (Rust's PipelineCmd)."""
 
-    name: str  # "set_mode" | "begin_turn" | "end_turn" | "cancel"
+    # "set_mode" | "begin_turn" | "end_turn" | "cancel" | "begin_shared_turn" | "prepare_shared"
+    name: str
     mode: str = ""
+    direction: object = None  # shared.Direction, for begin_shared_turn
+    shared: object = None  # config.Shared, for prepare_shared
+
+
+@dataclass(frozen=True)
+class Route:
+    """Where one utterance's sentences go: the run's own languages, or a
+    shared-machine turn's."""
+
+    target: str = ""  # "" = the run's
+    voice: str = ""  # a voice's folder; "" = the first voice for the target
+    generation: int = 0  # the cancel generation it belongs to
 
 
 def describe_mode(mode: str) -> str:
+    if mode == SHARED:
+        return "shared machine, waiting for either person's key, microphone closed"
     return "listening continuously" if mode == CONTINUOUS else "waiting for a turn, microphone closed"
 STALL_TICK = 0.05  # the stall probe's timer
 STALL_REPORT_MS = 150  # lateness worth an event
@@ -258,7 +274,12 @@ class Pipeline:
         # speaks what arrives from it. Comparing recognizers is a harness, not
         # a conversation, and a file is not one either: neither pairs.
         wanted = options.pair if options.pair is not None else config.peer.enabled
-        self.paired = bool(wanted) and not options.compare and not self.source.lossless
+        # Shared mode is one machine for two people; paired mode is two machines.
+        self.paired = (bool(wanted) and not options.compare and not self.source.lossless
+                       and config.mode.kind != SHARED)
+        # Cancelling moves this on; recognition, translation and speech jobs
+        # from before it are dropped when reached.
+        self.generation = 0
         self.peer = None
         self._speaker_thread = None  # set once the voice is loaded
         self._stop = threading.Event()
@@ -306,6 +327,19 @@ class Pipeline:
     def begin_turn(self) -> None:
         self.send(Command("begin_turn"))
 
+    def begin_shared_turn(self, direction) -> None:
+        """Shared machine: open the microphone for one side's turn."""
+        self.send(Command("begin_shared_turn", direction=direction))
+
+    def cancel(self) -> None:
+        """Throw away the turn in progress, or stop what it is producing."""
+        self.send(Command("cancel"))
+
+    def prepare_shared(self, settings) -> None:
+        """Shared machine: the sides' settings changed. Load and prepare each
+        side's recognizer now, so no turn waits on a load."""
+        self.send(Command("prepare_shared", shared=settings))
+
     def end_turn(self) -> None:
         self.send(Command("end_turn"))
 
@@ -350,11 +384,14 @@ class Pipeline:
         selected = (self.options.asr or self.config.asr.engine).strip()
         if not selected:
             raise asr_pkg.AsrError(f"[asr].engine is unset in {paths.config_file(self.root)}; run --report to see the models")
-        engine = next((e for e in engines if e.dir_name == selected), None)
-        if engine is None:  # never substitute a different one
-            raise asr_pkg.AsrError(f'recognizer "{selected}" was not found in {paths.asr_dir(self.root)}; run --report')
         self.recognizer_name = selected
-        self.emit(Loading(f"recognizer {selected}"))
+        return self._load_recognizer(engines, selected, self.config.languages.source, "recognizer")
+
+    def _load_recognizer(self, engines: list[models.Engine], folder: str, language: str, role: str):
+        engine = next((e for e in engines if e.dir_name == folder), None)
+        if engine is None:  # never substitute a different one
+            raise asr_pkg.AsrError(f'recognizer "{folder}" was not found in {paths.asr_dir(self.root)}; run --report')
+        self.emit(Loading(f"recognizer {folder}"))
         began = time.perf_counter()
         recognizer = asr_pkg.load(engine)
         # A GPU model's first pass is several times slower than the rest;
@@ -362,11 +399,11 @@ class Pipeline:
         warm_up = getattr(recognizer, "warm_up", None)
         if warm_up is not None:
             try:
-                warm_up(self.config.languages.source)
+                warm_up(language)
             except Exception as e:  # a warm-up that fails changes nothing
                 log.debug("warm-up pass failed: %s", e)
         memory = recognizer.memory()
-        self.emit(ModelLoaded("recognizer", selected, memory.device, memory.gpu_bytes, memory.cpu_bytes,
+        self.emit(ModelLoaded(role, folder, memory.device, memory.gpu_bytes, memory.cpu_bytes,
                               time.perf_counter() - began))
         return recognizer
 
@@ -400,8 +437,43 @@ class Pipeline:
         root, config = self.root, self.config
         language, target = config.languages.source, config.languages.target
         engines = [e for e in models.discover(paths.asr_dir(root), models.Role.ASR) if isinstance(e, models.Engine)]
-        recognizer = self._recognizer(engines)
-        recognizer.prepare(language)
+        # Shared-machine mode loads each side's own recognizer instead; the
+        # main one is loaded only if a side uses it.
+        initial = config.mode.kind if config.mode.kind in (CONTINUOUS, TURN, SHARED) else TURN
+        shared_at_start = initial == SHARED and not self.source.lossless
+        recognizers: dict[str, object] = {}  # by folder name, loaded once and kept
+        if shared_at_start:
+            recognizer = None
+            self.recognizer_name = (self.options.asr or config.asr.engine).strip()
+        else:
+            recognizer = self._recognizer(engines)
+            recognizer.prepare(language)
+            recognizers[self.recognizer_name] = recognizer
+        shared_settings = config.shared
+
+        def ensure(folder: str, tag: str) -> None:
+            """Load the recognizer in `folder` unless it is loaded, and get it
+            ready for the language."""
+            if folder not in recognizers:
+                recognizers[folder] = self._load_recognizer(engines, folder, tag, f"recognizer {folder}")
+            recognizers[folder].prepare(tag)
+
+        def prepare_shared() -> None:
+            """Each side's recognizer, loaded and ready for that side's
+            language, ahead of the first turn. A side that fails says so in
+            its own column; the other side keeps working."""
+            for side in shared_mod.SIDES:
+                problem = ""
+                try:
+                    engine = shared_mod.recognizer_for(side, shared_settings, engines, self.recognizer_name)
+                    ensure(engine.dir_name, shared_mod.language(side, shared_settings))
+                except Exception as e:  # SharedError, AsrError, or a model that won't load
+                    problem = str(e)
+                    log.warning("shared machine, %s side: %s", side, e)
+                self.emit(SharedSide(side, problem))
+
+        if shared_at_start:
+            prepare_shared()
         # Loaded here, on the pipeline thread before any audio, so a missing
         # or broken translator is an error now rather than a thread that dies later.
         live = not self.source.lossless
@@ -413,7 +485,19 @@ class Pipeline:
         if self.options.translate:
             translation = TranslationThread(self, self._translator(), target, None if self.paired else speaker, self.peer)
         if speaker is not None:
-            speaker.prepare(language if self.paired else target)
+            if shared_at_start:
+                # Both directions' voices now, so neither person's first turn
+                # waits on a load. A side whose voice is missing is refused by
+                # the window when its key is pressed, so here it is only reported.
+                for side in shared_mod.SIDES:
+                    try:
+                        resolved = shared_mod.direction(side, shared_settings, engines, self.recognizer_name,
+                                                        speaker.voices)
+                        speaker.prepare(resolved.direction.target, resolved.direction.voice)
+                    except shared_mod.SharedError as e:
+                        log.warning("shared machine, %s side: %s", side, e)
+            else:
+                speaker.prepare(language if self.paired else target)
             self._speaker_thread = speaker
 
         guards = self._guards()
@@ -444,21 +528,20 @@ class Pipeline:
         # provisional pass is done rather than only the newest.
         fast_file = self.source.lossless and not getattr(self.source, "realtime", False)
         worker = AsrWorker(
-            self, recognizer, language, ring, guards, comparison, segments_dir, translation,
+            self, recognizer, language, recognizers, ring, guards, comparison, segments_dir, translation,
             ctx.FragmentHolder(py.fragments.min_words, py.fragments.hold_ms / 1000, enabled=hold and translation is not None),
             every_pass=fast_file, source_clock=fast_file,
         )
 
-        def handle(segment: Segment, parts=None, speech_seconds=None, ends_turn: bool = False) -> None:
-            worker.final(segment, parts, speech_seconds, ends_turn)
+        def handle(segment: Segment, parts=None, speech_seconds=None, ends_turn: bool = False,
+                   direction=None) -> None:
+            worker.final(segment, parts, speech_seconds, ends_turn, direction)
 
         # Continuous mode keeps the microphone open. Turn mode keeps the device
         # closed until a turn is taken and closes it again when the turn ends:
         # between turns the microphone is released, not merely ignored. A file
         # has no turns.
-        mode = CONTINUOUS if not live or config.mode.kind == CONTINUOUS else TURN
-        if live and config.mode.kind not in (CONTINUOUS, TURN):
-            self.emit(Error(f'mode "{config.mode.kind}" arrives at a later milestone; taking turns instead'))
+        mode = initial if live else CONTINUOUS
         control = speaker.player.control() if speaker is not None else None
         mic_open = False
         turn: _Turn | None = None
@@ -504,7 +587,7 @@ class Pipeline:
             # The speech the detector heard, pauses left out (for the guards).
             speech = sum(len(seg.samples) for seg in segments) / SAMPLE_RATE
             handle(Segment(active.origin + first, audio[first:last], active.origin + first), parts, speech,
-                   ends_turn=True)
+                   ends_turn=True, direction=active.direction)
 
         event_level, log_level = LevelMeter(LEVEL_EVENT), LevelMeter(LEVEL_LOG)
         probe.start()
@@ -530,7 +613,8 @@ class Pipeline:
                 for command in pending:
                     if not live:
                         continue  # a file has no turns and one mode
-                    if command.name == "set_mode" and command.mode in (CONTINUOUS, TURN) and command.mode != mode:
+                    if command.name == "set_mode" and command.mode in (CONTINUOUS, TURN, SHARED) \
+                            and command.mode != mode:
                         # Finish whatever the old mode had in progress first.
                         if turn is not None:
                             finish_turn(turn)
@@ -542,6 +626,16 @@ class Pipeline:
                         mode = command.mode
                         segmenter.reset(consumed)
                         speaking = False
+                        if mode == SHARED:
+                            prepare_shared()
+                        elif recognizer is None:
+                            # Started on a shared machine: the main recognizer is needed now.
+                            try:
+                                ensure(self.recognizer_name, language)
+                                worker.recognizer = recognizer = recognizers[self.recognizer_name]
+                            except Exception as e:
+                                log.warning("cannot load the recognizer: %s", e)
+                                self.emit(Error(f"cannot load the recognizer: {e}"))
                         if mode == CONTINUOUS:
                             open_mic()
                         log.info("now %s", describe_mode(mode))
@@ -562,10 +656,48 @@ class Pipeline:
                         speaking = False
                         turn = _Turn(consumed)
                         self.emit(TurnStarted())
+                    elif command.name == "begin_shared_turn" and mode == SHARED and turn is None:
+                        direction = command.direction
+                        # Normally loaded already, when shared mode started or
+                        # its settings changed; loaded now otherwise.
+                        try:
+                            ensure(direction.asr, direction.source)
+                        except Exception as e:
+                            log.warning("%s side: %s", direction.side, e)
+                            self.emit(SharedSide(direction.side, str(e)))
+                            continue
+                        # Logged every turn: if the language were lost, Whisper
+                        # would guess, be right most of the time, and hide the bug.
+                        log.info('shared machine: %s turn; recognising "%s" with "%s", translating into "%s", '
+                                 'voice "%s"', direction.side, direction.source, direction.asr, direction.target,
+                                 direction.voice)
+                        if control is not None:
+                            control.begin_turn()
+                        try:
+                            open_mic()
+                        except Exception as e:
+                            if control is not None:
+                                control.end_turn()
+                            log.warning("cannot start a turn: %s", e)
+                            self.emit(Error(f"cannot start a turn: {e}"))
+                            continue
+                        log.info("turn started: microphone open")
+                        segmenter.reset(consumed)
+                        speaking = False
+                        turn = _Turn(consumed, direction=direction)
+                        self.emit(TurnStarted(direction.side))
+                    elif command.name == "prepare_shared":
+                        shared_settings = command.shared
+                        if mode == SHARED:
+                            prepare_shared()
                     elif command.name == "end_turn" and turn is not None:
                         finish_turn(turn)
                         turn = None
                     elif command.name == "cancel":
+                        # Whatever is in flight becomes stale: recognition,
+                        # translations and speech from before this are dropped
+                        # when reached.
+                        self.generation += 1
                         if turn is not None:
                             close_mic()
                             segmenter.reset(consumed)
@@ -660,7 +792,8 @@ class Pipeline:
             if speaker is not None:
                 speaker.finish(wait=not self._stop.is_set())
             probe.stop()
-            recognizer.close()
+            for loaded in recognizers.values():
+                loaded.close()
             if comparison is not None:
                 comparison.close()
 
@@ -680,6 +813,7 @@ class _Turn:
     origin: int  # capture position of the turn's first sample
     audio: list = field(default_factory=list)
     segments: list = field(default_factory=list)
+    direction: object = None  # shared machine: whose turn, and where its words go
 
 
 def trim_and_split(origin: int, length: int, segments: list[Segment], max_part: int):
@@ -753,9 +887,15 @@ class AsrWorker:
     provisional passes while streaming. Everything recognised leaves here as
     sentences, through the fragment holder, to the translator."""
 
-    def __init__(self, pipeline: Pipeline, recognizer, language: str, ring, guards, comparison, segments_dir,
-                 translation, holder: ctx.FragmentHolder, every_pass: bool, source_clock: bool) -> None:
+    def __init__(self, pipeline: Pipeline, recognizer, language: str, recognizers: dict, ring, guards, comparison,
+                 segments_dir, translation, holder: ctx.FragmentHolder, every_pass: bool, source_clock: bool) -> None:
         self.pipeline, self.recognizer, self.language = pipeline, recognizer, language
+        # The run's own recognizer and language, and every loaded recognizer
+        # by folder: a shared-machine turn brings its own.
+        self._own = (recognizer, language)
+        self.recognizers = recognizers
+        self.recognizer_name = pipeline.recognizer_name
+        self.route = Route()
         self.ring, self.guards, self.comparison, self.segments_dir = ring, guards, comparison, segments_dir
         self.translation, self.holder = translation, holder
         self.every_pass = every_pass
@@ -777,10 +917,12 @@ class AsrWorker:
 
     # ---- called from the pipeline thread
 
-    def final(self, segment: Segment, parts=None, speech_seconds=None, ends_turn: bool = False) -> None:
+    def final(self, segment: Segment, parts=None, speech_seconds=None, ends_turn: bool = False,
+              direction=None) -> None:
         with self._lock:
             self._latest = None  # a provisional pass over an utterance that has ended is stale
-        self.queue.put(("final", segment, parts, speech_seconds, time.monotonic(), ends_turn))
+        self.queue.put(("final", segment, parts, speech_seconds, time.monotonic(), ends_turn, direction,
+                        self.pipeline.generation))
 
     def partial(self, snapshot: Segment) -> None:
         if self.every_pass:
@@ -818,7 +960,10 @@ class AsrWorker:
                     pass
                 elif job[0] == "partial":
                     self._partial(job[1])
+                elif job[7] < self.pipeline.generation:
+                    log.info("a cancelled turn: not recognised")
                 else:
+                    self._use(job[6], job[7])
                     self._final(*job[1:5])
                     if job[5]:
                         self._turn_ended()
@@ -829,6 +974,18 @@ class AsrWorker:
                 self.pipeline.emit(Error(f"recognition failed: {e}"))
         for ready in self.holder.flush():
             self._send(*ready)
+
+    def _use(self, direction, generation: int) -> None:
+        """This utterance's recognizer, language and route: the run's own, or
+        a shared-machine turn's."""
+        if direction is None:
+            self.recognizer, self.language = self.recognizers.get(self.pipeline.recognizer_name, self._own[0]), self._own[1]
+            self.recognizer_name = self.pipeline.recognizer_name
+            self.route = Route(generation=generation)
+        else:
+            self.recognizer, self.language = self.recognizers[direction.asr], direction.source
+            self.recognizer_name = direction.asr
+            self.route = Route(direction.target, direction.voice, generation)
 
     def _turn_ended(self) -> None:
         """A turn's utterance has been recognised. Nothing follows it, so a
@@ -886,7 +1043,7 @@ class AsrWorker:
                  segment.end_ms(), segment.duration_ms())
         # Logged every time: if the language were lost, Whisper would guess,
         # be right most of the time, and hide the bug.
-        log.info('  transcribing as "%s" with "%s"', language, pipeline.recognizer_name)
+        log.info('  transcribing as "%s" with "%s"', language, self.recognizer_name)
         pipeline.stats.audio_seconds += len(utterance.pcm) / SAMPLE_RATE
         if stream is not None:
             self._final_streamed(stream, utterance, start, end, cut_at)
@@ -894,7 +1051,7 @@ class AsrWorker:
             self._final_whole(utterance, parts, speech_seconds, start, end, cut_at)
         if self.comparison is not None:
             table = compare.run_all(self.comparison, utterance, language, self.guards)
-            compare.report(table, pipeline.recognizer_name)
+            compare.report(table, self.recognizer_name)
             pipeline.emit(ComparisonMsg(table))
         if pipeline.options.write_wav:
             write_segment(utterance, self.segments_dir)
@@ -1003,7 +1160,7 @@ class AsrWorker:
         self.pipeline.emit(SentenceMsg(sentence.id, sentence.utterance, sentence.text, source,
                                        sentence.start, sentence.end, sentence.approximate))
         if self.translation is not None:
-            self.translation.submit(sentence, source, cut_at)
+            self.translation.submit(sentence, source, cut_at, self.route)
 
 
 END_OF_TURN = object()  # in the translation queue: the turn's sentences are all before this
@@ -1034,8 +1191,8 @@ class TranslationThread:
         self._thread = threading.Thread(target=self._run, name="pyvolis-translate", daemon=True)
         self._thread.start()
 
-    def submit(self, sentence: sentences.Sentence, source: str, cut_at: float = 0.0) -> None:
-        job = (sentence, source, cut_at)
+    def submit(self, sentence: sentences.Sentence, source: str, cut_at: float = 0.0, route: Route = Route()) -> None:
+        job = (sentence, source, cut_at, route)
         if self.pipeline.source.lossless:
             self.queue.put(job)  # a file waits rather than lose a sentence
             return
@@ -1075,9 +1232,13 @@ class TranslationThread:
             if job is END_OF_TURN:
                 self.peer.release_floor()
                 continue
-            sentence, source, cut_at = job
-            request = tr.TranslationRequest(sentence.text, source, self.target,
-                                            self.history.context(self._count), list(self.pipeline.glossary))
+            sentence, source, cut_at, route = job
+            if route.generation < self.pipeline.generation:
+                log.info("sentence %s: cancelled; not translated", sentence.id)
+                continue
+            target = route.target or self.target
+            request = tr.TranslationRequest(sentence.text, source, target,
+                                            self.history.context(self._count, source), list(self.pipeline.glossary))
             try:
                 result = self.translator.translate(request)
             except tr.Refused as e:
@@ -1094,20 +1255,23 @@ class TranslationThread:
                 stats.not_translated += 1
                 emit(NotTranslated(sentence.id, "the translation came back empty"))
                 continue
+            if route.generation < self.pipeline.generation:
+                log.info("sentence %s: cancelled while it was being translated; dropped", sentence.id)
+                continue
             ms = int(result.seconds * 1000)
-            self.history.add(sentence.text, result.text)
+            self.history.add(sentence.text, result.text, source)
             stats.translated += 1
             stats.translate_ms.append(ms)
             log.info("sentence %s\n  [%s] %s\n  [%s] %s\n  (%d ms to translate on the %s)", sentence.id, source,
-                     sentence.text, self.target, result.text, ms, result.device.upper())
-            emit(Translated(sentence.id, result.text, self.target, ms, result.device, self.pipeline.translator_name))
+                     sentence.text, target, result.text, ms, result.device.upper())
+            emit(Translated(sentence.id, result.text, target, ms, result.device, self.pipeline.translator_name))
             spoken = self.speaker is not None
             if self.peer is not None:
                 from .peer import Outgoing
 
-                self.peer.deliver(Outgoing(sentence.id, self.target, result.text, source, sentence.text))
+                self.peer.deliver(Outgoing(sentence.id, target, result.text, source, sentence.text))
             elif spoken:
-                self.speaker.submit(sentence.id, result.text, self.target, cut_at)
+                self.speaker.submit(sentence.id, result.text, target, cut_at, route.voice, route.generation)
             if self.reviser is not None:
                 self.reviser.add(rev.Done(sentence.id, sentence.text, source, result.text, sentence.end, spoken))
                 self._revise()
@@ -1149,19 +1313,23 @@ class SpeakThread:
         self._thread = threading.Thread(target=self._run, name="pyvolis-speak", daemon=True)
         self._thread.start()
 
-    def prepare(self, language: str) -> None:
+    def prepare(self, language: str, folder: str = "") -> None:
         """Load the voice expected, at start, so the first sentence doesn't wait.
         A language with no voice is reported now, not at the first sentence."""
         try:
-            self._voice(language)
+            self._voice(language, folder)
         except Exception as e:
             log.warning("%s", e)
             self.pipeline.emit(Error(f"translations into {language} will not be spoken: {e}"))
 
-    def _voice(self, language: str):
+    def _voice(self, language: str, folder: str = ""):
+        """The voice in `folder` (a shared-machine side's choice), or the
+        first voice for the language."""
         from . import tts
 
-        engine = tts.for_language(self.voices, language)
+        engine = next((v for v in self.voices if v.dir_name == folder and v.enabled()), None) if folder else None
+        if engine is None:
+            engine = tts.for_language(self.voices, language)
         if engine.dir_name not in self.loaded:
             self.pipeline.emit(Loading(f"voice {engine.dir_name}"))
             began = time.perf_counter()
@@ -1170,9 +1338,10 @@ class SpeakThread:
             self.pipeline.emit(ModelLoaded("voice", engine.dir_name, "cpu", 0, size, time.perf_counter() - began))
         return self.loaded[engine.dir_name]
 
-    def submit(self, sentence_id: str, text: str, language: str, cut_at: float) -> None:
+    def submit(self, sentence_id: str, text: str, language: str, cut_at: float, folder: str = "",
+               generation: int | None = None) -> None:
         try:
-            self.queue.put_nowait((sentence_id, text, language, cut_at))
+            self.queue.put_nowait((sentence_id, text, language, cut_at, folder, generation))
         except queue.Full:
             log.warning("speech is behind; sentence %s not spoken", sentence_id)
             self.pipeline.emit(Error(f"speech fell behind the conversation; sentence {sentence_id} was not spoken"))
@@ -1181,7 +1350,7 @@ class SpeakThread:
         """Paired: what the other PC sent, in the voice for its language.
         False when too much is already waiting."""
         try:
-            self.queue.put_nowait(("", text, language, 0.0))
+            self.queue.put_nowait(("", text, language, 0.0, "", None))  # never cancelled
             return True
         except queue.Full:
             log.warning("speech is behind; an utterance from the other PC was not spoken")
@@ -1202,10 +1371,17 @@ class SpeakThread:
     def _run(self) -> None:
         emit = self.pipeline.emit
         while (job := self.queue.get()) is not None:
-            sentence_id, text, language, cut_at = job
+            sentence_id, text, language, cut_at, folder, generation = job
             label = f"sentence {sentence_id}" if sentence_id else "an utterance from the other PC"
+
+            def cancelled() -> bool:
+                return generation is not None and generation < self.pipeline.generation
+
+            if cancelled():
+                log.info("%s: cancelled; not spoken", label)
+                continue
             try:
-                voice = self._voice(language)
+                voice = self._voice(language, folder)
                 began = time.perf_counter()
                 speech = voice.speak(text)
             except Exception as e:
@@ -1217,6 +1393,9 @@ class SpeakThread:
                 emit(Error(f"{label}: the voice produced no audio"))
                 continue
             synthesised_ms = int((time.perf_counter() - began) * 1000)
+            if cancelled():  # cancelled while it was being synthesised
+                log.info("%s: cancelled; not spoken", label)
+                continue
             self.player.play(speech.samples, speech.sample_rate)
             # From the moment the utterance was cut, through recognition,
             # translation and synthesis, to the sound card.

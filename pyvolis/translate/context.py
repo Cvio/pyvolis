@@ -44,7 +44,7 @@ class History:
         self.token_budget = token_budget
         self._turns: deque[Turn] = deque()
 
-    def add(self, source: str, translation: str) -> None:
+    def add(self, source: str, translation: str, lang: str = "") -> None:
         """Remember a sentence. When there are more than `sentences`, the
         oldest half goes at once rather than one each time: the prompt then
         starts the same way for several sentences running, and the translator
@@ -52,7 +52,7 @@ class History:
         context for every sentence."""
         if self.sentences <= 0:
             return
-        self._turns.append(Turn(source, translation))
+        self._turns.append(Turn(source, translation, lang))
         if len(self._turns) > self.sentences:
             for _ in range(max(1, self.sentences // 2)):
                 self._turns.popleft()
@@ -63,10 +63,17 @@ class History:
         for turn, new in zip(reversed(self._turns), reversed(translations)):
             turn.translation = new
 
-    def context(self, count_tokens) -> list[Turn]:
+    def context(self, count_tokens, lang: str = "") -> list[Turn]:
         """The most recent turns that fit: at most `sentences`, and never
         more than `token_budget` tokens, newest kept first. `count_tokens`
-        measures a text with the translator's own tokenizer."""
+        measures a text with the translator's own tokenizer.
+
+        `lang` is the language about to be translated from. On a shared
+        machine the two people alternate, and what the other person said was
+        translated the other way: such a turn is given turned round (its
+        translation as the source, its source as the translation), which is
+        an equally true pair in this direction, so each sentence is translated
+        knowing what both people have said."""
         if self.sentences <= 0:
             return []
         chosen: list[Turn] = []
@@ -82,7 +89,8 @@ class History:
             # starts where this one does.
             for _ in range(len(self._turns) - len(chosen)):
                 self._turns.popleft()
-        return list(reversed(chosen))
+        return [turn if not lang or not turn.lang or turn.lang == lang
+                else Turn(turn.translation, turn.source, lang) for turn in reversed(chosen)]
 
     def clear(self) -> None:
         self._turns.clear()

@@ -40,6 +40,7 @@ class Turn:
 
     source: str
     translation: str
+    lang: str = ""  # the source's language, when a session translates both ways
 
 
 @dataclass

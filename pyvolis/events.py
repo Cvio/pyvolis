@@ -108,7 +108,19 @@ class Mode(Event):
 
 @dataclass
 class TurnStarted(Event):
-    """A turn is open: the microphone is live."""
+    """A turn is open: the microphone is live. In shared-machine mode,
+    `side` is whose turn it is ("left" or "right")."""
+
+    side: str = ""
+
+
+@dataclass
+class SharedSide(Event):
+    """Shared-machine mode: whether one side's recognizer is ready, and if
+    not, why. Shown in that side's column."""
+
+    side: str
+    problem: str = ""
 
 
 @dataclass

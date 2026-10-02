@@ -26,7 +26,7 @@ import numpy as np
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QRadioButton, QStyledItemDelegate, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
@@ -37,7 +37,8 @@ from .. import events as ev
 from ..audio import SAMPLE_RATE
 from ..config import Config, ConfigError, PyvolisConfig, save_pyvolis_selections
 from ..filesource import FileSourceError, read_16k_mono
-from ..pipeline import CONTINUOUS, TURN, ArraySource, Collected, Options, Pipeline
+from ..pipeline import CONTINUOUS, SHARED, TURN, ArraySource, Collected, Options, Pipeline
+from .. import shared as shared_mod
 from ..translate.context import parse_glossary
 from .. import peer as peer_mod
 from . import session as ses
@@ -77,6 +78,9 @@ KEY_NAMES = {
 }
 
 
+KEY_SYMBOLS = {"ArrowLeft": "←", "ArrowRight": "→", "ArrowUp": "↑", "ArrowDown": "↓"}
+
+
 def qt_key(name: str):
     """The Qt key for a [mode].turn_key name, or None if it isn't one."""
     if name in KEY_NAMES:
@@ -100,6 +104,20 @@ class TurnKeyFilter(QObject):
         kind = event.type()
         if kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease, QEvent.Type.ShortcutOverride):
             w = self.window
+            if w.shared_keys_active() and w.isActiveWindow():
+                # Shared machine: each person's key, and Escape while there is
+                # something to cancel (otherwise it still closes a dropdown).
+                which = w.shared_key_for(event.key())
+                if which:
+                    # A text box with the focus keeps its arrow keys; clicking
+                    # anywhere outside it gives them back.
+                    if isinstance(QApplication.focusWidget(), QLineEdit):
+                        return False
+                    if kind == QEvent.Type.ShortcutOverride:
+                        event.accept()
+                    elif kind == QEvent.Type.KeyPress and not event.isAutoRepeat():
+                        w.shared_key(which)
+                    return True
             if event.key() != w.turn_key or not w.turn_key_active() or not w.isActiveWindow():
                 return False
             if kind == QEvent.Type.ShortcutOverride:
@@ -144,6 +162,9 @@ class MainWindow(QMainWindow):
         self.turn_key = qt_key(config.mode.turn_key)
         self.turn_key_state = ses.TurnKey()
         self.holding = False
+        self.shared_keys = {side: qt_key(shared_mod.key(side, config.shared)) for side in shared_mod.SIDES}
+        self.shared_notes: dict[str, str] = {}  # what a side's last key press had to say
+        self.voices: list = []
 
         self.setWindowTitle("pyvolis")
         self.resize(1180, 760)
@@ -279,6 +300,10 @@ class MainWindow(QMainWindow):
                                     "border-radius: 8px")
         self.mode_turn = QRadioButton("Take turns")
         self.mode_continuous = QRadioButton("Listen continuously")
+        self.mode_shared = QRadioButton("Shared machine (two people, a key each)")
+        self.mode_shared.setToolTip("Two people who speak different languages use this one PC. Each presses their "
+                                    "own key to talk and again to finish; the reply is spoken in the other "
+                                    "person's language. Not while pairing with another PC.")
         key = self.config.mode.turn_key
         self.style_toggle = QRadioButton(f"Press {key} to start, again to stop")
         self.style_hold = QRadioButton(f"Hold {key} while speaking")
@@ -292,6 +317,13 @@ class MainWindow(QMainWindow):
             style_row.addWidget(widget)
         mode_row.addWidget(style_box)
         mode_row.addWidget(self.mode_continuous)
+        mode_row.addWidget(self.mode_shared)
+        # Explicit groups: the three modes exclude each other, and so do the two styles.
+        self.mode_group, self.style_group = QButtonGroup(self), QButtonGroup(self)
+        for button in (self.mode_turn, self.mode_continuous, self.mode_shared):
+            self.mode_group.addButton(button)
+        for button in (self.style_toggle, self.style_hold):
+            self.style_group.addButton(button)
         self.style_box, self.mode_box = style_box, mode_box
         form = QFormLayout()
         form.addRow("Mode", mode_box)
@@ -325,8 +357,9 @@ class MainWindow(QMainWindow):
                                      self.hold_fragments, self.pair]
         for widget in (self.streaming, self.use_context, self.revise, self.hold_fragments):
             widget.toggled.connect(self.save)
-        for widget in (self.mode_turn, self.mode_continuous, self.style_toggle, self.style_hold):
+        for widget in (self.mode_turn, self.mode_continuous, self.mode_shared, self.style_toggle, self.style_hold):
             widget.toggled.connect(self.mode_controls_changed)
+        self._build_shared()
         for combo in (self.source_lang, self.target_lang):
             for variety in varieties.TABLE:
                 combo.addItem(variety.display, variety.tag)
@@ -365,6 +398,7 @@ class MainWindow(QMainWindow):
         body = QHBoxLayout()
         body.addWidget(settings)
         right = QVBoxLayout()
+        right.addWidget(self.shared_view)
         right.addWidget(self.headsets)
         right.addWidget(self.table, 1)
         right.addWidget(self.progress)
@@ -380,6 +414,135 @@ class MainWindow(QMainWindow):
         central.setLayout(layout)
         self.setCentralWidget(central)
 
+    def _build_shared(self) -> None:
+        """The shared machine's two columns, left and right as the people
+        sit: each side's language and key in large letters, what it is doing,
+        and its own language, recognizer and voice."""
+        self.shared_view = QWidget()
+        row = QHBoxLayout(self.shared_view)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.sides: dict[str, dict] = {}
+        for side in shared_mod.SIDES:
+            frame = QFrame()
+            frame.setObjectName("side")
+            layout = QVBoxLayout(frame)
+            title, status, note = QLabel(), QLabel(), QLabel()
+            title.setStyleSheet("font-size: 22pt; font-weight: bold; color: white; background: transparent")
+            note.setWordWrap(True)
+            note.setStyleSheet("color: #f0c060; background: transparent")
+            language, recognizer, voice = QComboBox(), QComboBox(), QComboBox()
+            for variety in varieties.TABLE:
+                language.addItem(variety.display, variety.tag)
+            form = QFormLayout()
+            form.setContentsMargins(0, 0, 0, 0)
+            labels = []
+            for text, combo in (("Speaks", language), ("Heard by", recognizer), ("Spoken by", voice)):
+                label = QLabel(text)
+                label.setStyleSheet("color: white; background: transparent")
+                labels.append(label)
+                form.addRow(label, combo)
+                combo.currentIndexChanged.connect(self.shared_settings_changed)
+            voice.setToolTip("The voice this person's words are spoken in: a voice in the other person's language.")
+            for widget in (title, status):
+                layout.addWidget(widget)
+            layout.addLayout(form)
+            layout.addWidget(note)
+            row.addWidget(frame, 1)
+            self.sides[side] = {"frame": frame, "title": title, "status": status, "note": note,
+                                "language": language, "recognizer": recognizer, "voice": voice}
+
+    def _fill_shared(self) -> None:
+        """Each side's pickers: its language; the recognizers that cover it,
+        best first; and the voices that speak the OTHER side's language."""
+        was, self._filling = getattr(self, "_filling", False), True
+        settings = self.config.shared
+        for side in shared_mod.SIDES:
+            widgets = self.sides[side]
+            _select(widgets["language"], shared_mod.language(side, settings))
+            for combo, first, ranked, chosen, tag in (
+                (widgets["recognizer"], "(best match)",
+                 shared_mod.recognizers_for(shared_mod.language(side, settings), self.engines),
+                 shared_mod.asr(side, settings), shared_mod.language(side, settings)),
+                (widgets["voice"], "(first match)",
+                 shared_mod.voices_for(shared_mod.language(shared_mod.other(side), settings), self.voices),
+                 shared_mod.voice(side, settings), shared_mod.language(shared_mod.other(side), settings)),
+            ):
+                combo.clear()
+                combo.addItem(first, "")
+                for r in ranked:
+                    combo.addItem(f"{r.engine.name}  ({r.fit.label(tag)})", r.engine.dir_name)
+                if chosen and combo.findData(chosen) < 0:
+                    combo.addItem(f"{chosen}  (not usable for this language)", chosen)
+                _select(combo, chosen)
+        self._filling = was
+
+    def shared_settings_changed(self) -> None:
+        """A side's language, recognizer or voice was changed: saved, and the
+        recognizers loaded now rather than on the next key press."""
+        if getattr(self, "_filling", True):
+            return
+        s = self.config.shared
+        left, right = self.sides["left"], self.sides["right"]
+        before = (s.left_language, s.right_language)
+        s.left_language = left["language"].currentData() or s.left_language
+        s.right_language = right["language"].currentData() or s.right_language
+        s.left_asr, s.right_asr = left["recognizer"].currentData() or "", right["recognizer"].currentData() or ""
+        s.left_voice, s.right_voice = left["voice"].currentData() or "", right["voice"].currentData() or ""
+        if (s.left_language, s.right_language) != before:
+            # A recognizer or voice chosen for the old language doesn't carry over.
+            if s.left_language != before[0]:
+                s.left_asr, s.right_voice = "", ""
+            if s.right_language != before[1]:
+                s.right_asr, s.left_voice = "", ""
+            self._fill_shared()
+        self.shared_notes = {}
+        self.save()
+        if self.pipeline is not None and self.source is None:
+            self.pipeline.prepare_shared(dataclasses.replace(s))
+        self.refresh()
+
+    def shared_keys_active(self) -> bool:
+        """Whether the two keys are ours right now: a live run on a shared machine."""
+        return (self.pipeline is not None and self.source is None and self.session.mode == SHARED
+                and self.session.state == ses.LISTENING)
+
+    def shared_key_for(self, key) -> str:
+        """"left" or "right" for a side's key, "escape" when Escape has something to cancel, else ""."""
+        for side, wanted in self.shared_keys.items():
+            if wanted is not None and key == wanted:
+                return side
+        return "escape" if key == Qt.Key.Key_Escape and self.session.shared_can_cancel() else ""
+
+    def shared_key(self, which: str) -> None:
+        """Turn a side's key, or Escape, into a turn."""
+        if self.pipeline is None:
+            return
+        if which == "escape":
+            log.info("shared machine: Escape; cancelling")
+            self.pipeline.cancel()
+            return
+        action, why = self.session.shared_press(which)
+        if action == "end":
+            log.info("shared machine: %s key; ending the %s turn", which, which)
+            self.pipeline.end_turn()
+        elif action == "ignore":
+            log.info("shared machine: %s key ignored: %s", which, why)
+        else:
+            try:
+                resolved = shared_mod.direction(which, self.config.shared, self.engines, self.config.asr.engine,
+                                                self.voices)
+            except shared_mod.SharedError as e:
+                log.info("shared machine: %s key refused: %s", which, e)
+                self.shared_notes[which] = str(e)
+                self.refresh()
+                return
+            if resolved.warnings:
+                self.shared_notes[which] = " ".join(resolved.warnings)
+            else:
+                self.shared_notes.pop(which, None)
+            log.info("shared machine: %s key; starting the %s turn", which, which)
+            self.pipeline.begin_shared_turn(resolved.direction)
+
     # -------------------------------------------------------------- settings
 
     def rediscover(self) -> None:
@@ -387,6 +550,9 @@ class MainWindow(QMainWindow):
         self._filling = True
         self.engines = [e for e in models.discover(paths.asr_dir(self.root), models.Role.ASR)
                         if isinstance(e, models.Engine)]
+        self.voices = [e for e in models.discover(paths.tts_dir(self.root), models.Role.TTS)
+                       if isinstance(e, models.Engine)]
+        self._fill_shared()
         self.translators = [t for t in models.discover_translators(paths.mt_dir(self.root))
                             if isinstance(t, models.Translator)]
         _select(self.source_lang, self.config.languages.source)
@@ -422,7 +588,8 @@ class MainWindow(QMainWindow):
         self.use_context.setChecked(self.pyconfig.context.mode in ("carry", "revision"))
         self.revise.setChecked(self.pyconfig.context.mode == "revision")
         self.hold_fragments.setChecked(self.pyconfig.fragments.hold)
-        (self.mode_continuous if self.config.mode.kind == CONTINUOUS else self.mode_turn).setChecked(True)
+        {CONTINUOUS: self.mode_continuous, SHARED: self.mode_shared}.get(self.config.mode.kind,
+                                                                         self.mode_turn).setChecked(True)
         (self.style_hold if self.config.mode.turn_style == "hold" else self.style_toggle).setChecked(True)
         self._filling = False
 
@@ -459,7 +626,8 @@ class MainWindow(QMainWindow):
         if getattr(self, "_filling", True):
             return
         before = (self.config.mode.kind, self.config.mode.turn_style)
-        kind = CONTINUOUS if self.mode_continuous.isChecked() else TURN
+        kind = (CONTINUOUS if self.mode_continuous.isChecked() else SHARED if self.mode_shared.isChecked()
+                else TURN)
         style = "hold" if self.style_hold.isChecked() else "toggle"
         if (kind, style) == before:
             return
@@ -480,7 +648,8 @@ class MainWindow(QMainWindow):
     def pairing(self) -> bool:
         """Whether a run started now would pair: ticked, the microphone, and
         not a comparison."""
-        return self.pair.isChecked() and not self.source_file.isChecked() and not self.compare.isChecked()
+        return (self.pair.isChecked() and not self.source_file.isChecked() and not self.compare.isChecked()
+                and self.config.mode.kind != SHARED)
 
     def can_connect(self) -> bool:
         """Whether Connect can be pressed: running, and listening."""
@@ -781,8 +950,20 @@ class MainWindow(QMainWindow):
         self.revise.setEnabled(not running and self.use_context.isChecked() and not pairing)
         self.revise.setText("Revise earlier translations when what follows changes them"
                             + (" (off while paired)" if pairing else ""))
-        self.pair.setEnabled(not running and not file_mode)
+        # Shared mode is one machine for two people; paired mode is two machines.
+        shared = self.config.mode.kind == SHARED and not file_mode
+        self.pair.setEnabled(not running and not file_mode and not shared)
+        self.pair.setToolTip("Not in Shared machine mode: choose another mode first." if shared else
+                             "Two PCs, one conversation. Each translates what its own person says and sends only "
+                             "the text; the other PC shows it and speaks it. Works with Rust volis too.")
+        self.mode_shared.setEnabled(not self.pair.isChecked())
+        self.mode_shared.setToolTip('Not while paired: untick "Pair with another PC" first.' if self.pair.isChecked()
+                                    else "Two people who speak different languages use this one PC, a key each.")
+        if shared:  # each side has its own language and recognizer
+            for widget in (self.source_lang, self.target_lang, self.streaming):
+                widget.setEnabled(False)
         self._draw_peer(running)
+        self._draw_shared(shared)
         self.mode_box.setEnabled(not file_mode)
         self.style_box.setEnabled(self.mode_turn.isChecked())
         for widget in (self.open_button, self.realtime, self.fast, self.play_original, self.source_live, self.source_file):
@@ -840,6 +1021,60 @@ class MainWindow(QMainWindow):
         self.status.setText("\n".join(x for x in (line, self.scores) if x))
         self.error.setText(s.last_error or "")
         self.error.setVisible(bool(s.last_error))
+
+    def _draw_shared(self, shared: bool) -> None:
+        """The two columns: whose turn it is must be readable from across a
+        table, so the active side fills with colour and gets a heavy border."""
+        self.shared_view.setVisible(shared)
+        if not shared:
+            return
+        s = self.session
+        idle, red, amber, blue, green = "#343a46", "#c42828", "#be7d14", "#2864aa", "#268246"
+        live = s.state == ses.LISTENING and s.mode == SHARED
+        busy = s.turn != ses.IDLE or s.speaking
+        for side in shared_mod.SIDES:
+            widgets = self.sides[side]
+            name = shared_mod.key(side, self.config.shared)
+            key = KEY_SYMBOLS.get(name, name)
+            mine = s.active_side == side
+            if not live:
+                status, fill = ("Loading..." if s.state == ses.STARTING else "Press Start"), idle
+            elif mine:
+                if s.turn == ses.RECORDING:
+                    status, fill = f"● Listening - press {key} to finish", red
+                elif s.speaking:
+                    status, fill = "Speaking", blue
+                else:
+                    status, fill = "Working...", amber
+            elif s.speaking:
+                status, fill = "Speaking - wait", idle
+            elif s.turn != ses.IDLE:
+                status, fill = "Wait - the other person has the turn", idle
+            else:
+                status, fill = f"Ready - press {key}", green
+            widgets["title"].setText(f"{varieties.display_name(shared_mod.language(side, self.config.shared))} - {key}")
+            widgets["status"].setText(status)
+            ready = not mine and fill == green
+            widgets["status"].setStyleSheet(
+                f"font-size: 14pt; color: white; padding: 3px 8px; border-radius: 4px; "
+                f"background: {green if ready else 'transparent'}")
+            widgets["frame"].setStyleSheet(
+                f"QFrame#side {{ background: {fill if mine else idle}; border-radius: 10px; "
+                f"border: {'4px solid white' if mine else '1px solid #5a5a5a'}; }}")
+            # Why this side can't take a turn, or what to know about it (a
+            # voice that fell back, a recognizer that guesses the language),
+            # worked out now so it shows before anyone presses the key.
+            try:
+                resolved = shared_mod.direction(side, self.config.shared, self.engines, self.config.asr.engine,
+                                                self.voices)
+                note = " ".join(resolved.warnings)
+            except shared_mod.SharedError as e:
+                note = str(e)
+            note = note or s.side_problems.get(side, "") or self.shared_notes.get(side, "")
+            widgets["note"].setText(note)
+            widgets["note"].setVisible(bool(note))
+            for combo in ("language", "recognizer", "voice"):  # locked until this turn is over
+                widgets[combo].setEnabled(not busy)
 
     def _draw_peer(self, running: bool) -> None:
         """The peer panel: this PC's addresses for the other person to type,
@@ -978,7 +1213,8 @@ class MainWindow(QMainWindow):
                 notes.append(f"{line.translate_ms} ms")
             if line.sent_to:
                 notes.append(f"sent to {line.sent_to}")
-            cells = [ses.clock(line.start), line.source, line.target or (line.problem or ""), ", ".join(notes)]
+            who = {"left": "← ", "right": "→ "}.get(line.side, "")  # shared machine: whose words
+            cells = [who + ses.clock(line.start), line.source, line.target or (line.problem or ""), ", ".join(notes)]
             self._set(index, cells, span=(line.start, line.end))
             if line.problem and not line.target:
                 self.table.item(index, 2).setForeground(QBrush(PROBLEM))

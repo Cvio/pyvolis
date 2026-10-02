@@ -70,6 +70,21 @@ def _string(f: BinaryIO) -> str:
     return f.read(length).decode("utf-8", errors="replace")
 
 
+def _skip_strings(f: BinaryIO, count: int) -> None:
+    """Pass over `count` length-prefixed strings. Walked in memory, a block
+    at a time: a vocabulary is hundreds of thousands of them, and a read and
+    a seek for each made listing five translators take over a second."""
+    base, block, at = f.tell(), b"", 0
+    for _ in range(count):
+        if at + 8 > len(block):
+            base += at
+            f.seek(base)
+            block, at = f.read(1 << 22), 0
+        (size,) = struct.unpack_from("<Q", block, at)  # struct.error if the file ends here
+        at += 8 + size
+    f.seek(base + at)
+
+
 def _value(f: BinaryIO, kind: int, path: Path) -> Any:
     if kind in _FIXED:
         fmt = _FIXED[kind]
@@ -81,9 +96,7 @@ def _value(f: BinaryIO, kind: int, path: Path) -> Any:
         if element in _FIXED:
             f.seek(struct.calcsize(_FIXED[element]) * length, 1)
         elif element == _STRING:
-            for _ in range(length):
-                (size,) = struct.unpack("<Q", f.read(8))
-                f.seek(size, 1)
+            _skip_strings(f, length)
         else:
             raise GgufError(f"{path.absolute()} has an array of unsupported type {element}")
         return ("array", element, length)

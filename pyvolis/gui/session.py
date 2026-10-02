@@ -52,6 +52,7 @@ class Row:
     approximate: bool = False  # times shared out by length
     held: bool = False  # a fragment waiting to be joined to what follows
     sent_to: str | None = None  # paired: the PC its translation reached
+    side: str = ""  # shared machine: whose words these are ("left" or "right")
 
     kind = "row"
 
@@ -139,6 +140,9 @@ class Session:
         self.floor: tuple[str, str] | None = None  # (holder, their name)
         self.floor_note: str | None = None  # why the last turn asked for did not happen
         self.discovered: list = []  # other Volis PCs heard on the network: (name, host, port)
+        # Shared machine (P10).
+        self.active_side = ""  # whose turn it is, from its start until everything it produced is done
+        self.side_problems: dict[str, str] = {}  # why a side's recognizer isn't ready
 
     def begin(self, source: str, target: str, comparing: bool, speaks: bool, paired: bool = False) -> None:
         """A run is starting with these settings."""
@@ -150,6 +154,7 @@ class Session:
         # translations.
         self.speaks = speaks and not comparing and not self.paired
         self.peer, self.floor, self.floor_note = None, None, None
+        self.active_side, self.side_problems = "", {}
         self.models = {}
         self.progress = None
         self.stats = {}
@@ -159,7 +164,32 @@ class Session:
         self.mode = None
         self._reset_turn()
 
+    def shared_press(self, side: str) -> tuple[str, str]:
+        """Shared machine: what a press of one side's key should do, as
+        ("begin" | "end" | "ignore", why). One person at a time: while one
+        side records, the other key does nothing; while anything is being
+        worked on or spoken, neither does. The reason is shown in the column,
+        so a dead key isn't mistaken for a bug."""
+        if self.state != LISTENING or self.mode != "shared":
+            return "ignore", "not listening yet"
+        if self.turn == RECORDING:
+            if self.active_side == side:
+                return "end", ""
+            return "ignore", f"the {'right' if side == 'left' else 'left'} person is talking"
+        if self.turn == PROCESSING:
+            return "ignore", "speaking - wait" if self.speaking else "working - wait"
+        if self.turn == WAITING:
+            return "ignore", "waiting"
+        if self.speaking:
+            return "ignore", "speaking - wait"
+        return "begin", ""
+
+    def shared_can_cancel(self) -> bool:
+        """Shared machine: whether Escape has anything to cancel."""
+        return self.mode == "shared" and (self.turn != IDLE or self.speaking)
+
     def _reset_turn(self) -> None:
+        self.active_side = ""
         self.turn = IDLE
         self._untranslated, self._unspoken, self._recognised = set(), set(), False
 
@@ -184,6 +214,8 @@ class Session:
         elif isinstance(event, ev.TurnStarted):
             self._reset_turn()
             self.turn = RECORDING
+            self.active_side = event.side
+            self.floor_note = None
         elif isinstance(event, ev.TurnEnded):
             self.turn = PROCESSING
             # The microphone is closed; a frozen meter would say otherwise.
@@ -237,10 +269,15 @@ class Session:
             for row in self.rows():  # sentences committed while it was still being spoken
                 if row.utterance == event.index:
                     row.speech_ms, row.asr_ms = event.speech_ms, event.asr_ms
+        elif isinstance(event, ev.SharedSide):
+            if event.problem:
+                self.side_problems[event.side] = event.problem
+            else:
+                self.side_problems.pop(event.side, None)
         elif isinstance(event, ev.Held):
             utterance = int(event.id.split(".")[0])
             self._push(Row(event.id, utterance, 0.0, 0.0, self.languages[0], self.languages[1], event.text,
-                           held=True))
+                           held=True, side=self.active_side))
         elif isinstance(event, ev.SentenceMsg):
             speech_ms, asr_ms = self._utterances.get(event.utterance, (0, 0))
             held = self.row(event.id)
@@ -252,7 +289,7 @@ class Session:
                 self._push(Row(event.id, event.utterance, event.start, event.end, event.lang,
                                # Until the translation says what it is in.
                                self.languages[1], event.text, speech_ms=speech_ms, asr_ms=asr_ms,
-                               approximate=event.approximate))
+                               approximate=event.approximate, side=self.active_side))
         elif isinstance(event, ev.Translated):
             if (row := self.row(event.id)) is not None:
                 row.target, row.target_lang, row.translate_ms = event.text, event.lang, event.translate_ms
@@ -434,6 +471,13 @@ def indicator(s: Session, key: str, hold: bool, paused: bool = False, file_mode:
         return f"LOADING {s.loading}...", amber
     if paused:
         return "PAUSED", grey
+    if s.mode == "shared":
+        who = f"{s.active_side.upper()} " if s.active_side else ""
+        if s.turn == RECORDING:
+            return f"{who}IS TALKING", red
+        if s.turn == PROCESSING:
+            return ("SPEAKING" if s.speaking else "WORKING..."), (blue if s.speaking else amber)
+        return ("SPEAKING" if s.speaking else "READY - press your key to talk"), (blue if s.speaking else slate)
     if s.mode == "turn":
         if s.turn == RECORDING:
             return (f"RECORDING - {'release' if hold else 'press'} {key} to finish"), red

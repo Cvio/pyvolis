@@ -51,7 +51,13 @@ Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   translations to the other PC and speaks what arrives; the window has the peer panel.
   Checked with pyvolis at both ends (`tests/test_peer.py`, `tests/test_paired.py`) and against
   the real `volis.exe` (`scripts/pair_check.py`, 12 of 12). See "P9 findings".
-- Next: P10 (shared-machine mode, a recognizer per side, varieties). Wait for the go-ahead.
+- **P10 done:** shared-machine mode, a recognizer per side, varieties per side. `shared.py`
+  ports Rust's `shared.rs`; the pipeline loads each side's recognizer once and keeps it, takes
+  a turn's recognizer, language, target and voice from the key that started it, and drops
+  everything a cancelled turn had under way; the window has the third mode, the two columns
+  and the two keys. Checked with real models by `scripts/shared_check.py`; the keys by
+  `tests/test_shared_window.py`. Not yet tried by a person at the keyboard. See "P10 findings".
+- Next: P11 (more backends, each verified first). Wait for the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -273,6 +279,56 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     is told pairing is unavailable, as Rust's bind error does.
 55. **A file run never pairs** (Rust has no file mode), and neither does `--listen` or a
     comparison, as in Rust.
+56. **Shared mode: one table, not two.** Rust shows each person's turns in their own column.
+    pyvolis shows the two columns as panels (language and key in large letters, the status,
+    the side's pickers, a heavy border and colour on the active side) above its one table, in
+    which each row is marked with whose words it is (an arrow before the time). A
+    conversation reads in order that way, and the table is what file mode and export share.
+57. **Any recognizer that is told the language may hear a side without the warning.** Rust
+    warns for everything but Whisper ("decides the language itself"); in pyvolis only
+    Parakeet does, since Whisper, MMS and Cohere through transformers are all told. A
+    downloaded model that doesn't say which languages it knows may be chosen for a side, with
+    a note in the column.
+58. **Context crosses the two directions on a shared machine.** What the other person said
+    was translated the other way; it is given to the translator turned round (its translation
+    as the source, its source as the translation), which is an equally true pair in this
+    direction. So an answer is translated knowing the question. Rust has no context.
+59. **Cancelling drops what is under way at every stage** (Rust's cancel generation, extended
+    to recognition, which pyvolis runs on its own thread): a turn being recognised, sentences
+    queued or being translated, speech queued or being synthesised.
+60. **The mode radio buttons are in an explicit button group.** With a third button, Qt's
+    automatic exclusion between sibling radio buttons left two of them checked; found by the
+    shared-window tests.
+61. **Reading a GGUF's metadata walks its vocabulary in memory.** Listing five translators
+    took 1.5 s (a read and a seek for each of 260,000 strings) on every start of the window
+    and every `--report`; it takes 0.3 s now. Same result.
+
+## P10 findings
+
+- `scripts/shared_check.py`: English on the left, Spanish (Mexico) on the right, a recorded
+  sentence standing in for each person, real recognizers, translator (Gemma 3 4B on the GPU)
+  and voices (played into the cable). Two turns each, three set-ups, 12 of 12 turns right:
+
+  | set-up | left heard by (CER) | right heard by (CER) |
+  |---|---|---|
+  | Rust's models (its M7.6 check) | parakeet-tdt-0.6b-v3-int8 (29.6%, 2.3%) | whisper-large-v3-turbo-es-adriszmar (0.7%, 0.8%) |
+  | a downloaded model on the right | parakeet-tdt-0.6b-v3-int8 | whisper-large-v3-turbo-es (0.7%, 0.8%) |
+  | downloaded models on both sides | whisper-small (9.9%, 4.5%) | whisper-large-v3-turbo-es |
+
+  The 29.6% is "twenty five to thirty years" against the reference's "25 to 30": Parakeet
+  spells numbers out. Every turn: the log names the recognizer and the language it was told;
+  English came out in `es-MX`, spoken by `vits-piper-es_MX-claude-high` (the Mexico-tuned
+  voice, chosen first for a side set to Spanish (Mexico)); Spanish came out in `en`, spoken
+  by `vits-piper-en_US-lessac-medium`. Each recognizer loaded once.
+- **Not done: the same turns through Rust volis side by side.** Rust's shared mode exists
+  only in its window, with keys. The recognizers are the same files and were compared with
+  Rust's at P2 (Parakeet identical; Whisper int8 the same but for sub-sample differences).
+- **Not done by a person:** two people at the keyboard with speakers at normal volume (Rust's
+  M7.5 check): that the other key does nothing during a turn, that Escape silences a turn,
+  that pyvolis never translates its own voice, that whose turn it is can be read from across
+  a table. The logic for each is tested; the room is not.
+- The log line says `transcribing as "es-MX"`; the recognizer itself is given `es` (each
+  backend takes the language of the tag), as Rust's M7.7 check asks.
 
 ## P9 findings
 
