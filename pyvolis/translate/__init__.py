@@ -83,10 +83,16 @@ def load(entry: TranslatorEntry, prompt: PromptFile, device: str = "auto") -> Tr
         raise TranslateError(f'translator "{entry.id}" is incomplete; missing: {", ".join(entry.missing)}')
     if entry.unusable:
         raise TranslateError(f'translator "{entry.id}" can\'t be used: {entry.unusable}')
+    if entry.lora is not None and not entry.lora.is_file():
+        raise TranslateError(f'translator "{entry.id}": its LoRA adapter is not at {entry.lora.absolute()}')
     if entry.backend == "llamacpp":
         from .llamacpp import LlamaTranslator
 
         return LlamaTranslator(entry, prompt, device)
+    if entry.backend == "transformers":
+        from .hf import TransformersTranslator
+
+        return TransformersTranslator(entry, prompt, device)
     raise TranslateError(f'translator "{entry.id}" has backend "{entry.backend}", which pyvolis can\'t run yet')
 
 

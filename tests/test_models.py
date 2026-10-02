@@ -263,14 +263,6 @@ def test_an_unrecognisable_asr_folder_is_listed_not_skipped(tmp_path):
     assert str((tmp_path / "junk").absolute()) in entry.error
 
 
-def test_a_lora_adapter_and_a_gguf_speech_model_are_recognised_but_wait(tmp_path):
-    model(tmp_path, "lora", None, adapter_config__json='{"base_model_name_or_path": "openai/whisper-small"}')
-    model(tmp_path, "voxtral", None, ["Voxtral-Q4_K_M.gguf", "mmproj-Voxtral-f16.gguf"])
-    lora, voxtral = models.discover(tmp_path, Role.ASR)
-    assert "openai/whisper-small" in lora.detail and "P11" in lora.unusable
-    assert voxtral.backend == "llamacpp-audio" and "P11" in voxtral.unusable
-
-
 def test_card_languages_read_scalar_and_list_forms(tmp_path):
     (tmp_path / "README.md").write_text("---\nlanguage: ar\n---\n", encoding="utf-8")
     assert models.card_languages(tmp_path) == ["ar"]

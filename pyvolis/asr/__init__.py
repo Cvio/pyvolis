@@ -112,4 +112,8 @@ def load(engine: Engine) -> SegmentAsr:
         from . import hf
 
         return hf.load(engine)
+    if engine.backend == "llamacpp-audio":
+        from . import llamacpp_audio
+
+        return llamacpp_audio.load(engine)
     raise AsrError(f'model "{engine.dir_name}" has backend "{engine.backend}", which pyvolis can\'t run yet')

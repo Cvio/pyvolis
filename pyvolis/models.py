@@ -323,8 +323,14 @@ _PYVOLIS_KEYS = {
     "device": str,
     "dtype": str,
     "trust_remote_code": bool,
-    # A LoRA adapter's base model (P11).
+    # A LoRA adapter's base model: a folder in models/asr/, or a translator's
+    # id in models/mt/ ("qwen3-1.7b-q4_k_m.gguf", "folder/file.gguf").
     "base": str,
+    # How strongly a GGUF LoRA adapter is applied (default 1.0).
+    "scale": float,
+    # A llama.cpp speech model: what it is asked to do with the audio. "" =
+    # the audio alone (models trained only to transcribe). {language} is filled in.
+    "prompt": str,
 }
 
 
@@ -344,7 +350,7 @@ def load_overrides(directory: Path) -> dict[str, Any]:
             raise ModelError(
                 f"{where}: unknown key `{key}` (known: {', '.join(_PYVOLIS_KEYS)})"
             )
-        if not isinstance(value, expected):
+        if not isinstance(value, expected) and not (expected is float and isinstance(value, int)):
             raise ModelError(f"{where}: `{key}` must be a {expected.__name__}")
     for key in ("languages", "varieties"):
         if key in raw:
@@ -517,7 +523,7 @@ def _gguf_asr(directory: Path, ggufs: list[Path], overrides: dict[str, Any]) -> 
     encoders = [p for p in ggufs if p.name.lower().startswith("mmproj")]
     models = [p for p in ggufs if p not in encoders]
     if not models or not encoders:
-        what = "an audio encoder (mmproj-*.gguf)" if models else "a language model .gguf"
+        what = "audio encoder (mmproj-*.gguf)" if models else "language model .gguf"
         raise ModelError(
             f"{directory.absolute()} holds .gguf files but no {what}; a llama.cpp speech model "
             "needs both"
@@ -533,8 +539,7 @@ def _gguf_asr(directory: Path, ggufs: list[Path], overrides: dict[str, Any]) -> 
         detail=f"{models[0].name} + {encoders[0].name}",
         files=[ModelFile("model", models[0].name, models[0], True),
                ModelFile("audio encoder", encoders[0].name, encoders[0], True)],
-        unusable="llama.cpp speech models arrive at P11, once llama-cpp-python's audio input "
-        "is verified",
+        settings={k: overrides[k] for k in ("device", "prompt") if k in overrides},
     )
     _apply_languages(engine, directory, overrides)
     return engine
@@ -546,6 +551,11 @@ def _lora_adapter(directory: Path, overrides: dict[str, Any]) -> Engine:
         base = json.loads(config_path.read_text(encoding="utf-8")).get("base_model_name_or_path", "")
     except (OSError, ValueError) as e:
         raise ModelError(f"cannot parse {config_path.absolute()}: {e}") from e
+    # The base is a folder beside this one: named in pyvolis.toml, or the
+    # last part of the name the adapter was trained from ("openai/whisper-small"
+    # -> "whisper-small"). pyvolis never fetches it.
+    wanted = overrides.get("base") or str(base).rstrip("/").split("/")[-1]
+    base_dir = directory.parent / wanted if wanted else None
     engine = Engine(
         dir_name=directory.name,
         dir=directory,
@@ -556,8 +566,23 @@ def _lora_adapter(directory: Path, overrides: dict[str, Any]) -> Engine:
         from_engine_toml=False,
         detail=f"LoRA adapter for {base or '(base not named)'}",
         files=[ModelFile("adapter config", config_path.name, config_path, True)],
-        unusable="LoRA adapters are attached from P11",
+        settings={k: overrides[k] for k in ("device", "dtype", "trust_remote_code") if k in overrides},
     )
+    weights = [p for name in ("adapter_model.safetensors", "adapter_model.bin") if (p := directory / name).is_file()]
+    engine.files.append(ModelFile("adapter weights", weights[0].name, weights[0], True) if weights else
+                        ModelFile("adapter weights", "adapter_model.safetensors", directory / "adapter_model.safetensors", False))
+    if base_dir is None:
+        engine.unusable = (f"{config_path.absolute()} does not name its base model; name the base's folder with "
+                           f'base = "..." in {(directory / PYVOLIS_TOML).absolute()}')
+    elif not (base_dir / "config.json").is_file():
+        engine.unusable = (f'its base model "{base}" is not installed: looked for {base_dir.absolute()}. Download '
+                           f'it into that folder, or name the folder with base = "..." in '
+                           f"{(directory / PYVOLIS_TOML).absolute()}")
+    else:
+        engine.settings["base_dir"] = str(base_dir)
+        engine.detail = f"LoRA adapter on {base_dir.name}"
+        if not overrides.get("languages") and not card_languages(directory):
+            overrides = dict(overrides, languages=card_languages(base_dir) or [])
     _apply_languages(engine, directory, overrides)
     return engine
 
@@ -624,6 +649,10 @@ class Translator:
     size_bytes: int = 0
     missing: list[str] = field(default_factory=list)
     unusable: str = ""
+    # A LoRA adapter (a GGUF) applied to `path`, its base, and how strongly.
+    lora: Path | None = None
+    lora_scale: float = 1.0
+    settings: dict[str, Any] = field(default_factory=dict)  # device, dtype from the folder's pyvolis.toml
 
     def enabled(self) -> bool:
         return not self.missing and not self.unusable
@@ -681,10 +710,74 @@ def _translators_in(directory: Path) -> list[Translator | Failed]:
                 top_level=False,
                 missing=[w.name for w in weights if not w.present]
                 or ([] if weights else ["*.safetensors"]),
-                unusable="transformers translators arrive at P11",
+                unusable=_why_not_a_translator(directory),
+                size_bytes=sum(w.path.stat().st_size for w in weights if w.present),
+                has_chat_template=True,
+                settings={k: overrides[k] for k in ("device", "dtype", "trust_remote_code") if k in overrides},
             )
         ]
     raise ModelError(f"{directory.absolute()} has no .gguf file and no config.json")
+
+
+def _why_not_a_translator(directory: Path) -> str:
+    """"" for a folder transformers can load as a text-generating language
+    model with a chat template; otherwise why not."""
+    try:
+        config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return f"cannot parse {(directory / 'config.json').absolute()}: {e}"
+    from transformers.models.auto import modeling_auto
+
+    model_type = config.get("model_type")
+    seq2seq, ctc, _version = _speech_classes()
+    if model_type not in modeling_auto.MODEL_FOR_CAUSAL_LM_MAPPING_NAMES or model_type in seq2seq or model_type in ctc:
+        return (f'{(directory / "config.json").absolute()} has model_type "{model_type}", which is not a '
+                "text-generating language model transformers knows. A speech model belongs in models/asr/.")
+    template = ""
+    try:
+        template = json.loads((directory / "tokenizer_config.json").read_text(encoding="utf-8")).get("chat_template", "")
+    except (OSError, ValueError):
+        pass
+    if not template and not (directory / "chat_template.jinja").is_file():
+        return (f"{directory.absolute()} carries no chat template (tokenizer_config.json or chat_template.jinja), "
+                "so pyvolis can't lay out a prompt for it")
+    return ""
+
+
+def _attach_adapter(translator: Translator, adapter: Path, overrides: dict[str, Any], meta: dict) -> None:
+    """A LoRA adapter GGUF is a translator of its own: its base model with
+    the adapter applied. The folder's pyvolis.toml names the base."""
+    root = adapter.parent.parent
+    toml = (adapter.parent / PYVOLIS_TOML).absolute()
+    wanted = overrides.get("base", "")
+    if not wanted:
+        translator.unusable = (f'a LoRA adapter: name the translator it is for with base = "..." in {toml} '
+                               '(as --report lists it, e.g. "qwen3-1.7b-q4_k_m.gguf")')
+        return
+    base = root / wanted
+    if not base.is_file():
+        translator.unusable = f'a LoRA adapter whose base "{wanted}" is not installed: looked for {base.absolute()}'
+        return
+    try:
+        base_meta = gguf.read_metadata(base)
+    except gguf.GgufError as e:
+        translator.unusable = str(e)
+        return
+    if base_meta.get("general.type") == "adapter":
+        translator.unusable = f'its base "{wanted}" is itself an adapter'
+        return
+    if str(base_meta.get("general.architecture", "")) != translator.architecture:
+        translator.unusable = (f"a LoRA adapter for {translator.architecture} models, but its base {base.absolute()} "
+                               f"is a {base_meta.get('general.architecture')} model")
+        return
+    translator.lora, translator.path = adapter, base
+    translator.lora_scale = float(overrides.get("scale", 1.0))
+    translator.has_chat_template = isinstance(base_meta.get("tokenizer.chat_template"), str)
+    translator.size_bytes += base.stat().st_size
+    if "name" not in overrides:
+        translator.name = f"{base_meta.get('general.name') or base.stem} + {translator.name}"
+    if not translator.has_chat_template:
+        translator.unusable = f"its base {base.absolute()} carries no chat template"
 
 
 def _gguf_translator(
@@ -714,7 +807,7 @@ def _gguf_translator(
             else:
                 translator.missing.append(shard.name)
     if meta.get("general.type") == "adapter":
-        translator.unusable = "a LoRA adapter; adapters are attached to their base from P11"
+        _attach_adapter(translator, path, overrides or {}, meta)
     elif not translator.has_chat_template:
         translator.unusable = (
             f"{path.absolute()} carries no chat template (tokenizer.chat_template), so pyvolis "

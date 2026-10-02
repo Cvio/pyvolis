@@ -104,6 +104,9 @@ class LlamaTranslator:
                 # Rust's llama-cpp-2 gets; llama-cpp-python would turn it off.
                 flash_attn=True,
                 verbose=False,
+                # A LoRA adapter (a GGUF) applied to the base at load time.
+                lora_path=str(entry.lora) if entry.lora is not None else None,
+                lora_scale=entry.lora_scale,
             )
 
         try:

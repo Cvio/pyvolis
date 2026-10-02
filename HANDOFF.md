@@ -57,7 +57,12 @@ Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   everything a cancelled turn had under way; the window has the third mode, the two columns
   and the two keys. Checked with real models by `scripts/shared_check.py`; the keys by
   `tests/test_shared_window.py`. Not yet tried by a person at the keyboard. See "P10 findings".
-- Next: P11 (more backends, each verified first). Wait for the go-ahead.
+- **P11 done:** four more backends, each verified against the installed libraries before it
+  was built: GGUF speech models through llama.cpp's audio input (`asr/llamacpp_audio.py`),
+  LoRA adapters on GGUF translators and on transformers recognizers, and translators through
+  transformers (`translate/hf.py`). Each ran a fixture recording end to end
+  (`scripts/p11_check.py`). See "P11 findings".
+- Next: P12 (portability: the copy-to-run folder). Wait for the go-ahead.
 
 ## Environment, as verified at P0
 
@@ -302,6 +307,70 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
 61. **Reading a GGUF's metadata walks its vocabulary in memory.** Listing five translators
     took 1.5 s (a read and a seek for each of 260,000 strings) on every start of the window
     and every `--report`; it takes 0.3 s now. Same result.
+62. **llama.cpp speech models are driven through `mtmd_cpp` directly.** llama-cpp-python's
+    own chat handlers take images only (they refuse a model that "does not support vision"),
+    so `asr/llamacpp_audio.py` calls the multimodal functions itself: the audio as 16 kHz
+    samples, the prompt from the model's chat template, greedy decoding. In this process, as
+    everything is.
+63. **Two kinds of speech model, told apart by name or by the folder's `pyvolis.toml`.** A
+    model trained only to transcribe (a name containing "asr": Qwen3-ASR) is given the audio
+    alone, and its answer is begun for it with `language Spanish<asr_text>`, so the language
+    is told and not detected. Any other (Gemma 4, Voxtral) is asked in words to transcribe
+    the audio in the language. `prompt = "..."` in the folder's `pyvolis.toml` sets the words
+    (`""` = the audio alone). The language is given by its English name, never as a variety.
+64. **A LoRA adapter for a recognizer is merged into its base at load** (`peft`,
+    `merge_and_unload`), in memory only: recognition runs at the base's speed and no file is
+    written. The base is the folder beside the adapter named like the last part of the
+    adapter's `base_model_name_or_path` ("openai/whisper-small" -> `whisper-small`), or
+    `base = "..."` in the adapter folder's `pyvolis.toml`. It is never fetched.
+65. **A GGUF LoRA adapter is a translator of its own:** a folder in `models\mt\` with the
+    adapter `.gguf` and a `pyvolis.toml` saying `base = "<translator id>"` (and optionally
+    `scale = 0.5`). An adapter for another architecture than its base's is refused by name.
+66. **Transformers translators** load the folder with `AutoModelForCausalLM`, build the prompt
+    with the tokenizer's own chat template (Qwen3's thinking off), decode greedily, and pass
+    the same cleaning and guards. For a model with no GGUF yet; a GGUF of the same model is
+    faster (below).
+
+## P11 findings
+
+- **Verified before building,** on llama-cpp-python 0.3.35, peft 0.21.1, transformers 5.18.0:
+  `mtmd_cpp` has `mtmd_bitmap_init_from_audio` and `mtmd_support_audio`, and Qwen3-ASR 0.6B
+  and Gemma 4 E4B both transcribed the fixtures through it, on the GPU; `Llama(lora_path=,
+  lora_scale=)` applies an adapter (strength 0 gives the base's output exactly, a strong one
+  changes it, on CPU and GPU); `peft` merges a Whisper LoRA; `AutoModelForCausalLM` runs
+  Qwen3 0.6B. Nothing had to be worked around with a separate process.
+- `scripts/p11_check.py`, each backend on a fixture recording end to end:
+
+  | recognizer | backend | Spanish CER / WER | Arabic CER / WER | RTF |
+  |---|---|---|---|---|
+  | Qwen3-ASR 0.6B (Q8) | llamacpp-audio | 1.6% / 6.0% | 4.1% / 16.2% | 0.02 |
+  | Gemma 4 E4B (Q4_K_M + mmproj F16) | llamacpp-audio | 1.1% / 3.4% | 1.5% / 6.5% | 0.08 |
+  | whisper-small | transformers | | 7.4% / 22.7% | 0.13 |
+  | whisper-small + Algerian Darja LoRA | transformers + peft | | 12.6% / 43.1% | 0.13 |
+
+  Gemma 4 E4B's Arabic is the best measured here so far (Cohere Transcribe: 1.9 to 2.1% CER,
+  7.4% WER), and Qwen3-ASR is the fastest recognizer installed. The Darja adapter is worse
+  than its base on this recording, as it should be: the recording is Egyptian read speech and
+  the adapter is tuned for Algerian. What the check shows is that it loads and is applied.
+
+  | translator | backend | chrF | per sentence |
+  |---|---|---|---|
+  | Qwen3 1.7B Q4_K_M | llamacpp | 59.1 | 389 ms |
+  | Qwen3 0.6B safetensors | transformers | 58.8 | 1974 ms |
+  | Qwen3 1.7B + adapter, strength 0 | llamacpp + LoRA | 59.1, 14 of 14 sentences as the base | 387 ms |
+  | Qwen3 1.7B + adapter, strength 0.02 | llamacpp + LoRA | 59.6, 5 of 14 as the base | 394 ms |
+
+  The adapters are synthetic (`scripts/make_test_lora.py`: a random low-rank change to one
+  tensor), which proves loading, not that a trained adapter helps. No real GGUF LoRA for an
+  installed translator was found to test with.
+- **Not tested:** Voxtral (not downloaded; it is the second kind of model, as Gemma 4);
+  streaming and the shared machine with a llama.cpp speech model (they use the same
+  `transcribe` as every recognizer, without word timings); a LoRA on a CTC model.
+- The transformers translator is five times slower a sentence than the GGUF one although the
+  model is smaller: `generate` has a fixed cost per call that llama.cpp doesn't.
+- `models\asr\gemma-4-E4B-it-GGUF\` holds a hard link to the Gemma 4 file in `models\mt\`
+  (the same model heard and translating) beside its audio encoder, so it takes no more disk.
+  Loaded as both, it is in memory twice.
 
 ## P10 findings
 

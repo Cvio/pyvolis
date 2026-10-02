@@ -50,19 +50,40 @@ def read_metadata(path: Path) -> dict[str, Any]:
         raise GgufError(f"{path.absolute()} ends in the middle of its metadata") from e
 
 
-def _read(f: BinaryIO, path: Path) -> dict[str, Any]:
+def read_tensor_shapes(path: Path) -> dict[str, tuple[int, ...]]:
+    """Every tensor's dimensions, by name, as GGUF lists them (innermost
+    first). For checking that an adapter fits its base model."""
+    try:
+        with open(path, "rb") as f:
+            _metadata, tensors = _read(f, path, with_tensors=True)
+            return tensors
+    except OSError as e:
+        raise GgufError(f"cannot read {path.absolute()}: {e}") from e
+    except struct.error as e:
+        raise GgufError(f"{path.absolute()} ends in the middle of its tensor list") from e
+
+
+def _read(f: BinaryIO, path: Path, with_tensors: bool = False):
     if f.read(4) != MAGIC:
         raise GgufError(f"{path.absolute()} is not a GGUF file (no GGUF magic)")
     (version,) = struct.unpack("<I", f.read(4))
     if version not in (2, 3):
         raise GgufError(f"{path.absolute()} is GGUF version {version}; only 2 and 3 are known")
-    _tensors, kv_count = struct.unpack("<QQ", f.read(16))
+    tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
     metadata: dict[str, Any] = {}
     for _ in range(kv_count):
         key = _string(f)
         (kind,) = struct.unpack("<I", f.read(4))
         metadata[key] = _value(f, kind, path)
-    return metadata
+    if not with_tensors:
+        return metadata
+    tensors: dict[str, tuple[int, ...]] = {}
+    for _ in range(tensor_count):
+        name = _string(f)
+        (dims,) = struct.unpack("<I", f.read(4))
+        tensors[name] = struct.unpack(f"<{dims}Q", f.read(8 * dims))
+        f.seek(12, 1)  # its type and where its data starts
+    return metadata, tensors
 
 
 def _string(f: BinaryIO) -> str:

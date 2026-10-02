@@ -43,8 +43,9 @@ assert code == 0, f"--report exited {code}"
 # files a load reads first. Offline mode must find them in the folder.
 for entry in models.discover(paths.asr_dir(root), models.Role.ASR):
     if isinstance(entry, models.Engine) and entry.backend == "transformers" and entry.enabled():
-        transformers.AutoConfig.from_pretrained(entry.dir, local_files_only=True)
-        transformers.AutoProcessor.from_pretrained(entry.dir, local_files_only=True)
+        folder = entry.settings.get("base_dir") or entry.dir  # a LoRA adapter's model is its base
+        transformers.AutoConfig.from_pretrained(folder, local_files_only=True)
+        transformers.AutoProcessor.from_pretrained(folder, local_files_only=True)
         print(f"loaded the configuration and processor of {entry.dir_name}")
 
 # One recognizer of each backend, loaded and run: the smallest of each kind.

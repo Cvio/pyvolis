@@ -75,6 +75,10 @@ class HfAsr:
         self.name = engine.dir_name
         self._engine = engine
         settings = engine.settings
+        # A LoRA adapter's folder holds only the adapter: the model itself is
+        # its base, loaded from the base's folder with the adapter attached.
+        self._adapter_dir = engine.dir if settings.get("base_dir") else None
+        self._dir = Path(settings.get("base_dir") or engine.dir)
         want = settings.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
         if want == "cuda" and not torch.cuda.is_available():
             raise AsrError(f'"{self.name}" asks for device "cuda" in its pyvolis.toml, but torch sees no GPU')
@@ -85,11 +89,11 @@ class HfAsr:
         except AttributeError:
             raise AsrError(f'"{self.name}": unknown dtype "{dtype_name}" in {engine.dir / "pyvolis.toml"}') from None
 
-        elements, _ = weight_elements(engine.dir)
+        elements, _ = weight_elements(self._dir)
         self._bytes = int(elements * torch.tensor([], dtype=self.dtype).element_size())
         self._check_fits(torch)
 
-        config = json.loads((engine.dir / "config.json").read_text(encoding="utf-8"))
+        config = json.loads((self._dir / "config.json").read_text(encoding="utf-8"))
         self.model_type = config["model_type"]
         trust = bool(settings.get("trust_remote_code", False))
         began = time.perf_counter()
@@ -131,7 +135,7 @@ class HfAsr:
         # Library progress bars belong in a terminal session, not in the log.
         transformers.utils.logging.disable_progress_bar()
         transformers.utils.logging.set_verbosity_error()
-        path = str(self._engine.dir)
+        path = str(self._dir)
         common = dict(local_files_only=True, trust_remote_code=trust)
         self._processor = transformers.AutoProcessor.from_pretrained(path, **common)
         if self.model_type == "whisper":
@@ -145,10 +149,23 @@ class HfAsr:
         kwargs = dict(dtype=self.dtype, **common)
         if self.model_type == "whisper":
             kwargs["attn_implementation"] = "sdpa"  # the faster attention; word timings still work
-        if self.model_type in _ctc_types() and any(self._engine.dir.glob("adapter.*.safetensors")):
+        if self.model_type in _ctc_types() and any(self._dir.glob("adapter.*.safetensors")):
             # MMS: keep the adapter weights loadable per language.
             kwargs["ignore_mismatched_sizes"] = True
-        self._model = cls.from_pretrained(path, **kwargs).to(self.device).eval()
+        model = cls.from_pretrained(path, **kwargs)
+        if self._adapter_dir is not None:
+            # The LoRA is merged into the weights once, here: recognition then
+            # runs at the base model's own speed, and nothing is written back.
+            import peft
+
+            try:
+                model = peft.PeftModel.from_pretrained(model, str(self._adapter_dir), local_files_only=True)
+                model = model.merge_and_unload()
+            except Exception as e:
+                raise AsrError(f'the LoRA adapter in {self._adapter_dir} does not fit its base model in '
+                               f"{self._dir}: {e}") from e
+            log.info('  "%s": LoRA adapter merged into %s', self.name, self._dir.name)
+        self._model = model.to(self.device).eval()
         self._adapter = None
 
     # ------------------------------------------------------------ transcribe
@@ -239,14 +256,14 @@ class HfAsr:
 
     def _select_adapter(self, language: str) -> None:
         """MMS: switch the language adapter, by ISO 639-3 code."""
-        if not any(self._engine.dir.glob("adapter.*.safetensors")):
+        if not any(self._dir.glob("adapter.*.safetensors")):
             return
         code = varieties.iso639_3(language)
-        if code is None or not (self._engine.dir / f"adapter.{code}.safetensors").is_file():
-            have = ", ".join(sorted(p.name.split(".")[1] for p in self._engine.dir.glob("adapter.*.safetensors")))
+        if code is None or not (self._dir / f"adapter.{code}.safetensors").is_file():
+            have = ", ".join(sorted(p.name.split(".")[1] for p in self._dir.glob("adapter.*.safetensors")))
             raise AsrError(
                 f'"{self.name}" has no language adapter for "{language}" '
-                f"(looked for adapter.{code}.safetensors in {self._engine.dir}; present: {have})"
+                f"(looked for adapter.{code}.safetensors in {self._dir}; present: {have})"
             )
         if self._adapter != code:
             log.info('  "%s": language "%s" -> MMS adapter "%s"', self.name, language, code)

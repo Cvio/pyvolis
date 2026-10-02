@@ -64,5 +64,6 @@ function; no settings no milestone needs.
 
 ## Status
 
-P0 to P10 done (through the window, voice output, file mode, continuous and turn-based modes,
-streaming recognition, carry-forward context, revision mode, paired mode and the shared machine). See `HANDOFF.md`.
+P0 to P11 done (through the window, voice output, file mode, continuous and turn-based modes,
+streaming recognition, carry-forward context, revision mode, paired mode, the shared machine,
+and the llama.cpp speech, LoRA and transformers-translator backends). See `HANDOFF.md`.

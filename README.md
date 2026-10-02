@@ -4,7 +4,7 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P10 of `pyvolis-build.md`. pyvolis has its window: live translation from the
+Status: milestone P11 of `pyvolis-build.md`. pyvolis has its window: live translation from the
 microphone, taking turns or listening continuously, with voice output; file mode with a
 timeline and export; text shown while you speak, and translation that knows what was said
 before; two PCs can pair, with pyvolis or Rust volis at either end; and two people can share
@@ -37,15 +37,17 @@ Then:
 | Folder | What goes there |
 |---|---|
 | `models\vad\silero_vad.onnx` | the voice activity detector |
-| `models\asr\<name>\` | a recognizer: a Rust volis folder with `engine.toml`, or a Hugging Face download (Whisper, wav2vec2/MMS, Cohere Transcribe and other speech models `transformers` supports) |
+| `models\asr\<name>\` | a recognizer: a Rust volis folder with `engine.toml`; a Hugging Face download (Whisper, wav2vec2/MMS, Cohere Transcribe and other speech models `transformers` supports); a GGUF speech model with its audio encoder (`mmproj-*.gguf`: Qwen3-ASR, Gemma 4, Voxtral); or a LoRA adapter folder (`adapter_config.json`) beside its base |
 | `models\tts\<name>\` | a Piper voice with `engine.toml`, as in Rust volis |
-| `models\mt\` | translators: one `.gguf` at the top (the one Rust volis uses too), and any others **one folder per model** (Rust volis refuses two `.gguf` files at the top) |
+| `models\mt\` | translators: one `.gguf` at the top (the one Rust volis uses too), and any others **one folder per model** (Rust volis refuses two `.gguf` files at the top): a `.gguf`, a safetensors language model, or a LoRA adapter `.gguf` with a `pyvolis.toml` naming its base |
 
 To add a model from Hugging Face:
 
 ```powershell
 .\fetch-model.ps1 openai/whisper-large-v3-turbo -Role asr
 .\fetch-model.ps1 unsloth/gemma-3-4b-it-GGUF -Role mt -Include "*Q4_K_M.gguf"
+.\fetch-model.ps1 ggml-org/Qwen3-ASR-0.6B-GGUF -Role asr -Include "*Q8_0.gguf"   # the model and its audio encoder
+.\fetch-model.ps1 Qwen/Qwen3-0.6B -Role mt                                       # a safetensors translator
 ```
 
 It downloads into a folder named after the model and never needs `engine.toml`. For a gated
@@ -64,6 +66,26 @@ trust_remote_code = false
 
 Languages come from the model card's `language:` when there is one. Otherwise the model is
 listed as "languages unknown" and offered for every language.
+
+**LoRA adapters,** to try a tune without merging or converting it:
+
+- *For a recognizer:* put the adapter folder (`adapter_config.json`, `adapter_model.safetensors`)
+  in `models\asr\` beside its base model's folder. It appears as its own recognizer. The base
+  is found by name (`openai/whisper-small` means the folder `whisper-small`); if yours is
+  named differently, say `base = "<folder>"` in the adapter folder's `pyvolis.toml`.
+- *For a GGUF translator:* put the adapter `.gguf` (from llama.cpp's `convert_lora_to_gguf.py`)
+  in its own folder in `models\mt\` with a `pyvolis.toml`:
+
+  ```toml
+  base = "qwen3-1.7b-q4_k_m.gguf"   # the translator it is for, as --report lists it
+  scale = 1.0                        # how strongly it is applied
+  ```
+
+**A GGUF speech model** needs both its `.gguf` and its `mmproj-*.gguf` in one folder. A model
+that only transcribes (Qwen3-ASR) is given the audio alone; a general model that also hears
+(Gemma 4, Voxtral) is asked to transcribe. To change the wording, or to say which kind a
+model is, put `prompt = "..."` in the folder's `pyvolis.toml` (`""` = the audio alone,
+`{language}` = the language's name).
 
 ## The window
 
