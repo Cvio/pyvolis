@@ -40,11 +40,11 @@ The groups:
 |---|---|---|
 | `use` | tested on the development laptop (RTX 4070, 8 GB) and worth having | yes |
 | `bigger` | tested, but too large for 8 GB; to be measured on a larger GPU | yes |
-| `untested` | a sibling of a tested model; this one has never been run | no |
+| `untested` | a sibling of a tested model; this one has never been run (none at present) | no |
 | `tested` | tested and not kept: a worse score, or only there to prove a backend | no |
 
-To fetch one model that isn't on the list, use `.\fetch-model.ps1 <id> -Role asr|mt`
-(README). Voices are not covered by `fetch-model.ps1`; see "Voices" below.
+To fetch one model that isn't on the list, use `.\fetch-model.ps1 <id> -Role asr|mt|tts`
+(README).
 
 ## How the numbers were measured
 
@@ -76,8 +76,8 @@ them as "clearly better", "about the same" or "clearly worse", not to the decima
 | MMS 1B (adapters: ar, en, fa, es) | use | transformers, GPU, 1.9 GB | 3.9 GB | 1.3% / 6.0% (file) | 5.8% (clips) | 0.04 | Never writes punctuation or capitals, so sentences are cut by pauses alone. The only one here with a Persian adapter besides Whisper. |
 | Parakeet TDT 0.6B v3 (int8) | use | sherpa-onnx, CPU | 0.7 GB | 0.5 to 1.9% (clips) | no Arabic | not recorded | Rust volis's. Detects the language itself; spells numbers out. Identical output to Rust. |
 | Whisper large-v3-turbo (int8) | use | sherpa-onnx, CPU | 1.0 GB | 0.5 to 1.9% (clips) | 5.2% (clips), no punctuation on any Arabic output | not recorded | Rust volis's general recognizer. |
-| Qwen3-ASR 1.7B (Q8) | untested | llama.cpp audio | 2.5 GB | | | | The larger sibling of Qwen3-ASR 0.6B. Same code path. |
-| Voxtral Mini 3B (Q4_K_M) | untested | llama.cpp audio | 3.2 GB | | | | Asked in words, as Gemma 4 is. |
+| Qwen3-ASR 1.7B (Q8) | tested | llama.cpp audio | 2.5 GB | | | | Tried by the user on another machine (2026-10-02): not good. No figures recorded. To be removed from the list. |
+| Voxtral Mini 3B (Q4_K_M) | tested | llama.cpp audio | 3.2 GB | | | | The same: tried by the user, not good, no figures. |
 | whisper-small | tested | transformers, GPU | 1.0 GB | not tested | 7.4% / 22.7% (file) | 0.13 | Clearly worse than everything above. Kept on the list only as the base of the adapter below. |
 | whisper-algerian-darja-small (LoRA on whisper-small) | tested | transformers + peft | 0.1 GB | | 12.6% / 43.1% (file) | 0.13 | Proves that a LoRA adapter loads and is applied. Worse than its base on this recording, as expected: the recording is Egyptian read speech, the adapter is for Algerian. |
 
@@ -168,7 +168,8 @@ A voice from anywhere else (`<name>.onnx` and `<name>.onnx.json`, as Piper itsel
 them) has none of the other three. The script makes them: `tokens.txt` from the phoneme table
 in the `.json`, a copy of the model named `<name>.sherpa.onnx` with the fields added (the
 original is left untouched), and `espeak-ng-data` copied from another installed voice. To do
-that for a voice not on the list, add an entry with `piper_language=` to the `LIST`.
+that for a voice not on the list, `.\fetch-model.ps1 <id> -Role tts` does the same and writes
+an `engine.toml` from the voice's own `.onnx.json` (check its name and languages afterwards).
 
 The three Arabic voices declare no variety: `ar-AE` and `ar-JO` are not in the varieties
 table, and an unknown variety disables the folder.
@@ -205,9 +206,11 @@ Each model has its own licence. Check it before you pass a copy on.
 
 ## Not measured yet
 
-- Any recognizer on dialect speech, on a noisy room, or on a real conversation.
+- Any recognizer on dialect speech with a reference to score against, on a noisy room, or on
+  a real conversation. (The user's own trial, 2026-10-02: Standard Arabic and Iraqi dialect
+  speech gave the same translations.)
 - Persian recognition (MMS and Whisper have it; there is no Persian reference run).
 - The 12B translators' speed on a GPU they fit.
-- Qwen3-ASR 1.7B and Voxtral.
-- Streaming and shared machine mode with a GGUF speech model.
+- Streaming and shared machine mode with a GGUF speech model, with figures. (The user ran both
+  with Gemma 4 E4B and Qwen3-ASR on another machine, 2026-10-02: they work.)
 - A trained (not synthetic) LoRA adapter on a translator.

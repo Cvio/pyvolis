@@ -247,6 +247,12 @@ class PyContext:
     revise_sentences: int = 3  # revision: how many are translated again together
     revise_max_age_s: float = 30.0  # revision: never a sentence older than this
     revise_max_words: int = 8  # revision: nor one longer than this (it only gets reworded)
+    # Revision with the voice on: a short sentence is not spoken until the
+    # next one has been heard (or `hold_speech_s` has passed, or the turn has
+    # ended), so that it is spoken as revised. Off: speech is never delayed,
+    # and a spoken sentence is never revised.
+    hold_speech: bool = False
+    hold_speech_s: float = 2.0
 
 
 @dataclass
@@ -332,6 +338,7 @@ def save_pyvolis_selections(path: Path, pyconfig: PyvolisConfig) -> None:
     _set(doc, "translate", "prompt", pyconfig.translate.prompt)
     _set(doc, "asr", "streaming", pyconfig.asr.streaming)
     _set(doc, "context", "mode", pyconfig.context.mode)
+    _set(doc, "context", "hold_speech", pyconfig.context.hold_speech)
     _set(doc, "fragments", "hold", pyconfig.fragments.hold)
     try:
         path.write_text(tomlkit.dumps(doc), encoding="utf-8", newline="")

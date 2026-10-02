@@ -48,6 +48,7 @@ To add a model from Hugging Face:
 .\fetch-model.ps1 unsloth/gemma-3-4b-it-GGUF -Role mt -Include "*Q4_K_M.gguf"
 .\fetch-model.ps1 ggml-org/Qwen3-ASR-0.6B-GGUF -Role asr -Include "*Q8_0.gguf"   # the model and its audio encoder
 .\fetch-model.ps1 Qwen/Qwen3-0.6B -Role mt                                       # a safetensors translator
+.\fetch-model.ps1 csukuangfj/vits-piper-ar_JO-kareem-medium -Role tts            # a Piper voice
 ```
 
 **To get every model that has been tested and is worth having,** in the right folders with
@@ -150,8 +151,12 @@ Three checkboxes change how it works:
   three are translated again together, and a short earlier sentence whose translation changes
   is replaced ("He fell." becomes "It fell." once "The system isn't responding" is heard). The
   row is highlighted briefly, marked "revised", and keeps the earlier wording in its tooltip.
-  A sentence that has been spoken aloud is never revised, so this is for captions and files,
-  with "Speak translations" off. It costs one more translation per sentence.
+  A sentence that has been spoken aloud is never revised, so on its own this is for captions
+  and files, with "Speak translations" off. It costs one more translation per sentence.
+- **Wait for the next sentence before speaking a short one:** with revision and "Speak
+  translations" both on, a short sentence (8 words or fewer) is not spoken until the next one
+  has been heard, so it is spoken as revised. It waits 2 s at most, and not at all at the end
+  of a turn; a long sentence never waits. Off by default: speech is never delayed.
 - **Join short fragments to what follows:** a few words with no full stop wait up to 1.5 s
   for the rest before they are translated.
 
@@ -214,6 +219,8 @@ token_budget = 400  # and never more than this many tokens of them
 revise_sentences = 3     # revision: how many are translated again together
 revise_max_age_s = 30.0  # revision: never a sentence that ended longer ago than this
 revise_max_words = 8     # revision: nor one longer than this
+hold_speech = false      # revision with the voice on: a short sentence waits for the next before it is spoken
+hold_speech_s = 2.0      # ...this long at most
 
 [fragments]
 hold = true         # join a short fragment to what follows

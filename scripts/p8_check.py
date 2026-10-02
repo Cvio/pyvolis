@@ -98,11 +98,12 @@ def dialogues(root: Path, mts: list[str]) -> None:
 
 
 def run_file(root: Path, path: Path, source: str, target: str, asr: str, mt: str, mode: str, speak: bool = False,
-             max_age: float | None = None) -> dict:
+             max_age: float | None = None, hold: bool = False) -> dict:
     config = Config.parse(f'[asr]\nengine = "{asr}"\n[languages]\nsource = "{source}"\ntarget = "{target}"\n')
     pyconfig, _ = PyvolisConfig.load(paths.pyvolis_config_file(root))
     if max_age is not None:
         pyconfig.context.revise_max_age_s = max_age
+    pyconfig.context.hold_speech = hold
     events: queue.Queue = queue.Queue()
     options = Options(translate=True, speak=speak, mt=mt, context=mode, streaming=False)
     pipeline = Pipeline(root, config, options, events, ArraySource(read_16k_mono(path)), pyconfig=pyconfig)
@@ -116,7 +117,11 @@ def run_file(root: Path, path: Path, source: str, target: str, asr: str, mt: str
         translated[e.id] = e.new
     sentences = collected.of(ev.SentenceMsg)
     stats = collected.of(ev.Summary)[-1].stats
-    return {"sentences": sentences, "translated": translated, "revised": revised, "spoken": spoken, "stats": stats}
+    # What the voice was given, and whether any revision came after its sentence was spoken.
+    order = [(type(e), e.id) for e in collected.events if isinstance(e, (ev.Revised, ev.SpeakingStarted))]
+    late = [sid for i, (kind, sid) in enumerate(order) if kind is ev.Revised and (ev.SpeakingStarted, sid) in order[:i]]
+    return {"sentences": sentences, "translated": translated, "revised": revised, "spoken": spoken, "stats": stats,
+            "late": late}
 
 
 def files(root: Path, asr: str, mt: str) -> None:
@@ -147,6 +152,13 @@ def files(root: Path, asr: str, mt: str) -> None:
         both = sorted(set(e.id for e in out["revised"]) & set(out["spoken"]))
         print(f"  with the voice on: {len(out['spoken'])} sentences spoken, {len(out['revised'])} revisions, "
               f"{len(both)} of a spoken sentence  {'ok' if not out['revised'] else 'FAIL'}")
+        out = run_file(root, path, "es", "en", asr, mt, "revision", speak=True, hold=True)
+        good = len(out["spoken"]) == len(out["translated"]) and not out["late"]
+        print(f"  with the voice on and speech held for revision: {len(out['spoken'])} of {len(out['translated'])} "
+              f"sentences spoken, {len(out['revised'])} revisions, {len(out['late'])} after the sentence was spoken  "
+              f"{'ok' if good else 'FAIL'}")
+        for e in out["revised"]:
+            print(f"      {e.id}: {e.old}\n        -> {e.new} (spoken so)")
         out = run_file(root, path, "es", "en", asr, mt, "revision", max_age=0.0)
         print(f"  with the age limit at 0 s: {len(out['revised'])} revisions  {'ok' if not out['revised'] else 'FAIL'}")
 

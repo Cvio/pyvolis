@@ -21,7 +21,6 @@ overwritten.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import sys
@@ -40,6 +39,7 @@ from huggingface_hub import HfApi, hf_hub_download, snapshot_download  # noqa: E
 from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError  # noqa: E402
 
 import fetch_model  # noqa: E402
+from fetch_model import piper_engine  # noqa: E402
 
 MODELS = REPO / "models"
 DOWNLOADS = REPO / ".uv" / "downloads"  # archives, removed once unpacked
@@ -74,14 +74,6 @@ class Model:
     @property
     def target(self) -> Path:
         return MODELS / self.role / self.folder if self.folder else MODELS / self.role
-
-
-def piper_engine(name: str, language: str, model: str, variety: str = "", note: str = "") -> str:
-    variety_line = f'varieties = ["{variety}"]   # the dialect this voice speaks\n' if variety else ""
-    return (f'name = "{name}"\nkind = "segment"\nbackend = "vits"\nlanguages = ["{language}"]\n{variety_line}\n'
-            "# espeak-ng does the pronunciation for Piper voices. It is a directory, so it\n"
-            '# cannot be declared under [files].\ndata_dir = "espeak-ng-data"\n\n[files]\n'
-            f'{note}model  = "{model}"\ntokens = "tokens.txt"\n')
 
 
 GGUF_SPEECH = ("# Settings for this model in pyvolis. No engine.toml here: that file is for\n"
@@ -151,10 +143,10 @@ LIST = [
               "# Google's model card was tried and scored worse on the test recordings\n"
               "# (Arabic CER 3.4% against 1.5%, Spanish 1.7% against 1.1%). To try another:\n"
               '# prompt = "Transcribe the following speech segment in {language} into {language} text."\n')}),
-    Model("asr", "Qwen3-ASR-1.7B-GGUF", "untested", "Qwen3-ASR 1.7B Q8 and its audio encoder (llama.cpp audio)",
+    Model("asr", "Qwen3-ASR-1.7B-GGUF", "tested", "Qwen3-ASR 1.7B Q8 (the user's trial: not good)",
           repo="ggml-org/Qwen3-ASR-1.7B-GGUF", include=("*Q8_0.gguf",),
           write={"pyvolis.toml": GGUF_SPEECH + 'name = "Qwen3-ASR 1.7B (Q8)"\n' + SPEECH_LANGUAGES}),
-    Model("asr", "Voxtral-Mini-3B-2507-GGUF", "untested", "Voxtral Mini 3B Q4_K_M and its audio encoder (llama.cpp audio)",
+    Model("asr", "Voxtral-Mini-3B-2507-GGUF", "tested", "Voxtral Mini 3B Q4_K_M (the user's trial: not good)",
           repo="ggml-org/Voxtral-Mini-3B-2507-GGUF", include=("*Q4_K_M.gguf", "mmproj-*.gguf")),
     Model("asr", "whisper-small", "tested", "Whisper small (transformers); the base of the LoRA adapter below",
           repo="openai/whisper-small"),
@@ -225,13 +217,10 @@ def repo_files(api: HfApi, m: Model) -> dict[str, int]:
         if m.file not in sizes:
             raise Skip(f"{m.repo} has no file {m.file}")
         return {m.file: sizes[m.file]}
-    if m.role == "tts":  # a voice: everything it was published with
-        wanted = [f for f in sizes if f != ".gitattributes"]
-    else:
-        try:
-            wanted = fetch_model.choose(list(sizes), m.role, list(m.include))
-        except SystemExit as e:
-            raise Skip(str(e)) from None
+    try:
+        wanted = fetch_model.choose(list(sizes), m.role, list(m.include))
+    except SystemExit as e:
+        raise Skip(str(e)) from None
     return {f: sizes[f] for f in wanted}
 
 
@@ -319,57 +308,15 @@ def finish(m: Model) -> None:
     """Whatever the download itself doesn't bring: settings, and a raw Piper
     voice made loadable."""
     if m.piper_language:
-        convert_piper(m.target, m.piper_language)
+        try:
+            fetch_model.convert_piper(m.target, m.piper_language)
+        except SystemExit as e:
+            raise Skip(str(e)) from None
     for name, text in m.write.items():
         path = m.target / name
         if not path.exists():
             path.write_text(text, encoding="utf-8", newline="\n")
             print(f"    wrote {path}")
-
-
-def convert_piper(folder: Path, language: str) -> None:
-    """A voice as Piper publishes it (X.onnx + X.onnx.json) lacks three things
-    sherpa-onnx needs: tokens.txt, a few fields inside the model file, and
-    espeak-ng-data. Writes tokens.txt and X.sherpa.onnx (the original is left
-    untouched), and copies espeak-ng-data from another installed voice."""
-    for config_path in folder.glob("*.onnx.json"):
-        model = config_path.with_suffix("")  # X.onnx
-        out = model.with_name(model.stem + ".sherpa.onnx")
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        if not (folder / "tokens.txt").exists():
-            with open(folder / "tokens.txt", "w", encoding="utf-8", newline="\n") as f:
-                for symbol, ids in config["phoneme_id_map"].items():
-                    f.write(f"{symbol} {ids[0]}\n")
-        if not out.exists():
-            # ONNX is protobuf: ModelProto.metadata_props is repeated field 14,
-            # and appending entries to the file adds them to the list.
-            meta = {"model_type": "vits", "comment": "piper", "language": language,
-                    "voice": config["espeak"]["voice"], "has_espeak": 1, "n_speakers": config["num_speakers"],
-                    "sample_rate": config["audio"]["sample_rate"]}
-            out.write_bytes(model.read_bytes() + b"".join(_metadata_entry(k, v) for k, v in meta.items()))
-            print(f"    wrote {out} and tokens.txt")
-    if not (folder / "espeak-ng-data").is_dir():
-        donors = [p for p in (MODELS / "tts").glob("*/espeak-ng-data") if (p / "phontab").is_file()]
-        if not donors:
-            raise Skip(f"{folder} needs espeak-ng-data, and no other voice in {MODELS / 'tts'} has it to copy. "
-                       "Fetch a sherpa-onnx Piper voice first (tts/vits-piper-en_US-lessac-medium).")
-        shutil.copytree(donors[0], folder / "espeak-ng-data")
-        print(f"    copied espeak-ng-data from {donors[0].parent.name}")
-
-
-def _varint(n: int) -> bytes:
-    out = bytearray()
-    while True:
-        byte, n = n & 0x7F, n >> 7
-        out.append(byte | (0x80 if n else 0))
-        if not n:
-            return bytes(out)
-
-
-def _metadata_entry(key: str, value) -> bytes:
-    k, v = key.encode(), str(value).encode()
-    body = b"\x0a" + _varint(len(k)) + k + b"\x12" + _varint(len(v)) + v
-    return b"\x72" + _varint(len(body)) + body
 
 
 # ---------------------------------------------------------------- main

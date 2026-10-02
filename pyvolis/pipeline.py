@@ -1186,6 +1186,12 @@ class TranslationThread:
         self.history = ctx.History(py.sentences if mode in ("carry", "revision") else 0, py.token_budget)
         # Revision: and the last few are translated again once a new one arrives.
         self.reviser = rev.Reviser(py.revise_sentences, py.revise_max_age_s, py.revise_max_words) if mode == "revision" else None
+        # And with the voice on, optionally: a short sentence waits for the
+        # next one before it is spoken, so a revision can still be heard.
+        self.hold_speech = bool(py.hold_speech and self.reviser is not None and speaker is not None and peer is None)
+        self.hold_s = max(py.hold_speech_s, 0.0)
+        self._held = None  # (Done, cut_at, route, target, when it is spoken regardless)
+        self._drop_held = False
         self._count = getattr(translator, "count_tokens", lambda text: len(text) // 3)
         self.queue: queue.Queue = queue.Queue(TRANSLATION_QUEUE)
         self._thread = threading.Thread(target=self._run, name="pyvolis-translate", daemon=True)
@@ -1205,8 +1211,10 @@ class TranslationThread:
 
     def end_of_turn(self) -> None:
         """Paired: hand the floor back once everything queued so far has been
-        translated and sent, so the release goes out behind it on the wire."""
-        if self.peer is not None:
+        translated and sent, so the release goes out behind it on the wire.
+        Holding speech: nothing follows the turn's last sentence, so it is
+        spoken now."""
+        if self.peer is not None or self.hold_speech:
             self.queue.put(END_OF_TURN)
 
     def cancel(self) -> None:
@@ -1220,17 +1228,40 @@ class TranslationThread:
     def finish(self, wait: bool) -> None:
         """Stop after what's queued (wait) or at once."""
         if not wait:
+            self._drop_held = True
             while not self.queue.empty():
                 self.queue.get_nowait()
         self.queue.put(None)
         self._thread.join()
         self.translator.close()
 
+    def _get(self):
+        """The next job; or, when a sentence is being held from the voice and
+        nothing arrives in time, that sentence is spoken and the wait goes on."""
+        while True:
+            if self._held is None:
+                return self.queue.get()
+            try:
+                return self.queue.get(timeout=max(self._held[4] - time.monotonic(), 0.0))
+            except queue.Empty:
+                self._release()
+
+    def _release(self) -> None:
+        """Speak the held sentence, as it now reads."""
+        if self._held is None:
+            return
+        done, cut_at, route, target, _due = self._held
+        self._held = None
+        done.spoken = True  # from here on it is never revised
+        self.speaker.submit(done.id, done.translation, target, cut_at, route.voice, route.generation)
+
     def _run(self) -> None:
         stats, emit = self.pipeline.stats, self.pipeline.emit
-        while (job := self.queue.get()) is not None:
+        while (job := self._get()) is not None:
             if job is END_OF_TURN:
-                self.peer.release_floor()
+                self._release()
+                if self.peer is not None:
+                    self.peer.release_floor()
                 continue
             sentence, source, cut_at, route = job
             if route.generation < self.pipeline.generation:
@@ -1270,11 +1301,20 @@ class TranslationThread:
                 from .peer import Outgoing
 
                 self.peer.deliver(Outgoing(sentence.id, target, result.text, source, sentence.text))
-            elif spoken:
+            elif spoken and not self.hold_speech:
                 self.speaker.submit(sentence.id, result.text, target, cut_at, route.voice, route.generation)
             if self.reviser is not None:
-                self.reviser.add(rev.Done(sentence.id, sentence.text, source, result.text, sentence.end, spoken))
+                done = rev.Done(sentence.id, sentence.text, source, result.text, sentence.end,
+                                spoken and not self.hold_speech)
+                self.reviser.add(done)
                 self._revise()
+                if self.hold_speech:
+                    self._release()  # the one before, revised or not: its successor has been heard
+                    self._held = (done, cut_at, route, target, time.monotonic() + self.hold_s)
+                    if not self.reviser.revisable(done):
+                        self._release()  # a long sentence is never revised: no reason to wait
+        if not self._drop_held:
+            self._release()
         log.info("translation stopped")
 
     def _revise(self) -> None:

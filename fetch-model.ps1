@@ -1,4 +1,4 @@
-# Downloads a model from Hugging Face into models\asr\ or models\mt\, in a
+# Downloads a model from Hugging Face into models\asr\, models\mt\ or models\tts\, in a
 # folder named after the model. This, like setup.ps1, uses the internet;
 # pyvolis itself never runs it and never goes online.
 #
@@ -6,6 +6,9 @@
 #     .\fetch-model.ps1 unsloth/gemma-3-4b-it-GGUF -Role mt -Include "*Q4_K_M.gguf"
 #     .\fetch-model.ps1 oddadmix/whisper-large-v3-turbo-arabic-dialectal -Role asr -Name whisper-large-v3-turbo-arabic-dialectal-hf
 #                                     (-Name when the model's own name is already a folder)
+#     .\fetch-model.ps1 csukuangfj/vits-piper-ar_JO-kareem-medium -Role tts
+#                                     (a Piper voice: engine.toml is written, and a raw Piper
+#                                     model is made loadable; check the engine.toml afterwards)
 #     .\fetch-model.ps1 -Login        once, for gated models (a token from
 #                                     https://huggingface.co/settings/tokens)
 #
@@ -17,7 +20,7 @@
 
 param(
     [Parameter(Position = 0)][string]$Id,
-    [ValidateSet("asr", "mt")][string]$Role,
+    [ValidateSet("asr", "mt", "tts")][string]$Role,
     [string[]]$Include,
     [string]$Name,
     [switch]$Login
@@ -38,7 +41,7 @@ if ($Login) {
     $argsList += "--login"
 } else {
     if (-not $Id -or -not $Role) {
-        Write-Host "STOP: give a model id and -Role asr or -Role mt, e.g. .\fetch-model.ps1 openai/whisper-large-v3-turbo -Role asr" -ForegroundColor Red
+        Write-Host "STOP: give a model id and -Role asr, mt or tts, e.g. .\fetch-model.ps1 openai/whisper-large-v3-turbo -Role asr" -ForegroundColor Red
         exit 1
     }
     $argsList += @($Id, "--role", $Role)

@@ -258,7 +258,12 @@ class MainWindow(QMainWindow):
         self.revise.setToolTip("After each sentence the last few are translated again together; a short earlier "
                                "sentence whose translation changes is replaced, and the row says so. A sentence "
                                "that has been spoken aloud is never revised, so with Speak translations on this "
-                               "changes nothing. Costs one more translation per sentence.")
+                               "changes nothing unless the box below is on. Costs one more translation per sentence.")
+        self.hold_speech = QCheckBox("Wait for the next sentence before speaking a short one")
+        self.hold_speech.setToolTip("With revision and Speak translations on: a short sentence is not spoken until "
+                                    "the next one has been heard, so that it is spoken as revised. It waits at most "
+                                    "2 s ([context] hold_speech_s), and not at all at the end of a turn. Long "
+                                    "sentences are never revised and never wait. Off: speech is never delayed.")
         self.use_context.toggled.connect(lambda on: self.revise.setEnabled(on and not self.running()))
         self.hold_fragments = QCheckBox("Join short fragments to what follows")
         self.glossary = QLineEdit()
@@ -339,6 +344,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.streaming)
         form.addRow(self.use_context)
         form.addRow(self.revise)
+        form.addRow(self.hold_speech)
         form.addRow(self.hold_fragments)
         form.addRow("Glossary", self.glossary)
         form.addRow(self.pair)
@@ -354,9 +360,11 @@ class MainWindow(QMainWindow):
         self.locked_while_running = [self.source_lang, self.target_lang, self.recognizer, self.translator,
                                      self.input_device, self.output_device, self.speak, self.half_duplex,
                                      self.compare, self.streaming, self.use_context, self.revise,
-                                     self.hold_fragments, self.pair]
-        for widget in (self.streaming, self.use_context, self.revise, self.hold_fragments):
+                                     self.hold_speech, self.hold_fragments, self.pair]
+        for widget in (self.streaming, self.use_context, self.revise, self.hold_speech, self.hold_fragments):
             widget.toggled.connect(self.save)
+        for widget in (self.use_context, self.revise, self.speak):
+            widget.toggled.connect(lambda _on: self.refresh())
         for widget in (self.mode_turn, self.mode_continuous, self.mode_shared, self.style_toggle, self.style_hold):
             widget.toggled.connect(self.mode_controls_changed)
         self._build_shared()
@@ -587,6 +595,7 @@ class MainWindow(QMainWindow):
         self.streaming.setChecked(self.pyconfig.asr.streaming)
         self.use_context.setChecked(self.pyconfig.context.mode in ("carry", "revision"))
         self.revise.setChecked(self.pyconfig.context.mode == "revision")
+        self.hold_speech.setChecked(self.pyconfig.context.hold_speech)
         self.hold_fragments.setChecked(self.pyconfig.fragments.hold)
         {CONTINUOUS: self.mode_continuous, SHARED: self.mode_shared}.get(self.config.mode.kind,
                                                                          self.mode_turn).setChecked(True)
@@ -747,6 +756,7 @@ class MainWindow(QMainWindow):
         self.pyconfig.translate.model = self.translator.currentData() or ""
         self.pyconfig.asr.streaming = self.streaming.isChecked()
         self.pyconfig.context.mode = self.context_mode()
+        self.pyconfig.context.hold_speech = self.hold_speech.isChecked()
         self.pyconfig.fragments.hold = self.hold_fragments.isChecked()
         try:
             c.save_selections(paths.config_file(self.root))
@@ -950,6 +960,9 @@ class MainWindow(QMainWindow):
         self.revise.setEnabled(not running and self.use_context.isChecked() and not pairing)
         self.revise.setText("Revise earlier translations when what follows changes them"
                             + (" (off while paired)" if pairing else ""))
+        # Holding speech only means something with revision and the voice both on.
+        self.hold_speech.setEnabled(not running and not pairing and self.context_mode() == "revision"
+                                    and self.speak.isChecked())
         # Shared mode is one machine for two people; paired mode is two machines.
         shared = self.config.mode.kind == SHARED and not file_mode
         self.pair.setEnabled(not running and not file_mode and not shared)

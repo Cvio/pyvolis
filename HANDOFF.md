@@ -67,6 +67,17 @@ Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   files. Its settings files and its Piper conversion reproduce what is installed here byte
   for byte; **a download from nothing has not been run** (everything on the default list was
   already in place, except Gemma 3 12B and TranslateGemma 12B, which were deleted to save disk).
+- **The user's own trials, 2026-10-02, on another PC:** `fetch-models.ps1` from nothing works;
+  Gemma 4 E4B and Qwen3-ASR work in streaming and in shared machine mode; choosing Paired
+  shows the firewall message and the addresses; Standard Arabic and Iraqi speech gave the same
+  translations; Qwen3-ASR 1.7B and Voxtral are not good. Still to do by the user: two machines
+  paired, and two people at one machine.
+- **Decisions for P12, by the user:** NVIDIA machines only for now (so the GPU build of
+  llama.cpp ships; a machine without an NVIDIA card is not a target); several GB for the
+  folder is expected; choosing GPU or CPU is a nice-to-have (`[translate] device` exists).
+  Rust volis's prompt stays as it is. Linux is not needed for now.
+- **Holding speech for revision** (`[context] hold_speech`, off by default; difference 67) and
+  `fetch-model.ps1 -Role tts` were added after P11, at the user's request.
 - Next: P12 (portability: the copy-to-run folder). Wait for the go-ahead.
 
 ## Environment, as verified at P0
@@ -335,6 +346,16 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     with the tokenizer's own chat template (Qwen3's thinking off), decode greedily, and pass
     the same cleaning and guards. For a model with no GGUF yet; a GGUF of the same model is
     faster (below).
+67. **Holding speech for revision** (`[context] hold_speech`, default off). With revision and
+    the voice both on, a sentence short enough to be revised is not handed to the voice until
+    the next sentence has been translated (and the pair looked at again), or `hold_speech_s`
+    (2 s) has passed with nothing following, or the turn has ended. It is then spoken as it
+    reads at that moment and never revised again. A long sentence is never held. Without this
+    setting, revision changes nothing once the voice is on (P8). Off while paired, as revision is.
+    Measured (`scripts/p8_check.py`, `dialogue-es.wav`, 14 short sentences, the voice on): 14 of
+    14 spoken, 6 revised before they were spoken, none after. The mechanism works; the revisions
+    are as mixed as P8 found ("I can't find it." -> "I can't find him." better; "three houses
+    and a motorbike" -> "and a dog" worse).
 
 ## P11 findings
 
