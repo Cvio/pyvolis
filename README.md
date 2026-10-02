@@ -50,6 +50,11 @@ To add a model from Hugging Face:
 .\fetch-model.ps1 Qwen/Qwen3-0.6B -Role mt                                       # a safetensors translator
 ```
 
+**To get every model that has been tested and is worth having,** in the right folders with
+their settings files, run `.\fetch-models.ps1` (`-List` first, to see what it would download
+and how big it is). [MODELS.md](MODELS.md) has the list, each model's scores, and what each
+kind of folder needs.
+
 It downloads into a folder named after the model and never needs `engine.toml`. For a gated
 model, accept its terms on the model's page first, then run `.\fetch-model.ps1 -Login` once.
 

@@ -62,6 +62,11 @@ Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   LoRA adapters on GGUF translators and on transformers recognizers, and translators through
   transformers (`translate/hf.py`). Each ran a fixture recording end to end
   (`scripts/p11_check.py`). See "P11 findings".
+- **After P11:** `MODELS.md` lists every model tested with its scores, and `fetch-models.ps1`
+  (`scripts/fetch_models.py`) downloads the ones worth having into place with their settings
+  files. Its settings files and its Piper conversion reproduce what is installed here byte
+  for byte; **a download from nothing has not been run** (everything on the default list was
+  already in place, except Gemma 3 12B and TranslateGemma 12B, which were deleted to save disk).
 - Next: P12 (portability: the copy-to-run folder). Wait for the go-ahead.
 
 ## Environment, as verified at P0

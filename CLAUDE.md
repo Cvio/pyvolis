@@ -6,7 +6,8 @@ specification**; read the matching Rust module. The Rust repo and `model-convert
 reading only: never change anything in them unless the user explicitly approves a specific
 change.
 
-Which document holds what: `README.md` (setup, adding a model, file mode), `HANDOFF.md`
+Which document holds what: `README.md` (setup, adding a model, file mode), `MODELS.md` (every
+model tested, its scores, and `fetch-models.ps1`, whose list is in `scripts/fetch_models.py`), `HANDOFF.md`
 (status, and every difference from Rust volis with its reason), this file (constraints and
 working rules). Rust's documents cover the wire protocol, varieties and dialects; link to
 them, don't copy them.
