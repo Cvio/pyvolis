@@ -74,6 +74,11 @@ def vad_model_file(root: Path) -> Path:
     return models_dir(root) / "vad" / "silero_vad.onnx"
 
 
+def tashkeel_model_file(root: Path) -> Path:
+    """The Arabic vowel-marking model ([tts] diacritize in pyvolis.toml)."""
+    return models_dir(root) / "tashkeel" / "libtashkeel_model.ort"
+
+
 def asr_dir(root: Path) -> Path:
     return models_dir(root) / "asr"
 

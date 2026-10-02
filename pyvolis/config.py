@@ -256,6 +256,13 @@ class PyContext:
 
 
 @dataclass
+class PyTts:
+    # Arabic only: predict the vowel marks before the voice pronounces the
+    # text, as Piper itself does (models/tashkeel/libtashkeel_model.ort).
+    diacritize: bool = False
+
+
+@dataclass
 class PyFragments:
     # Hold a short sentence with no final punctuation and join it to the next.
     hold: bool = True
@@ -291,6 +298,7 @@ class PyvolisConfig:
     asr: PyAsr = field(default_factory=PyAsr)
     context: PyContext = field(default_factory=PyContext)
     fragments: PyFragments = field(default_factory=PyFragments)
+    tts: PyTts = field(default_factory=PyTts)
 
     @classmethod
     def load(cls, path: Path) -> tuple[PyvolisConfig, bool]:
@@ -340,6 +348,7 @@ def save_pyvolis_selections(path: Path, pyconfig: PyvolisConfig) -> None:
     _set(doc, "context", "mode", pyconfig.context.mode)
     _set(doc, "context", "hold_speech", pyconfig.context.hold_speech)
     _set(doc, "fragments", "hold", pyconfig.fragments.hold)
+    _set(doc, "tts", "diacritize", pyconfig.tts.diacritize)
     try:
         path.write_text(tomlkit.dumps(doc), encoding="utf-8", newline="")
     except OSError as e:

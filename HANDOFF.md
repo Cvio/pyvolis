@@ -76,8 +76,10 @@ Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   llama.cpp ships; a machine without an NVIDIA card is not a target); several GB for the
   folder is expected; choosing GPU or CPU is a nice-to-have (`[translate] device` exists).
   Rust volis's prompt stays as it is. Linux is not needed for now.
-- **Holding speech for revision** (`[context] hold_speech`, off by default; difference 67) and
-  `fetch-model.ps1 -Role tts` were added after P11, at the user's request.
+- **Holding speech for revision** (`[context] hold_speech`, off by default; difference 67),
+  **vowel marks for Arabic voices** (`[tts] diacritize`, off by default; differences 68, 69) and
+  `fetch-model.ps1 -Role tts` were added after P11, at the user's request. Whether the marks
+  make the voices sound better has not been judged by a listener.
 - Next: P12 (portability: the copy-to-run folder). Wait for the go-ahead.
 
 ## Environment, as verified at P0
@@ -356,6 +358,39 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     14 spoken, 6 revised before they were spoken, none after. The mechanism works; the revisions
     are as mixed as P8 found ("I can't find it." -> "I can't find him." better; "three houses
     and a motorbike" -> "and a dog" worse).
+68. **Vowel marks for Arabic before the voice** (`[tts] diacritize` in `pyvolis.toml`, default
+    off; `pyvolis/tashkeel.py`). Piper restores Arabic's short vowels with a small model
+    (libtashkeel) before espeak-ng pronounces the text; sherpa-onnx, which both apps use to run
+    Piper voices, leaves that step out. pyvolis can now run it: a port of piper-phonemize's
+    `tashkeel.cpp` on the same model file, through the `onnxruntime` Python package. One
+    departure from Piper's code: U+064B (fathatan) is removed from the input with the other
+    marks (Piper leaves it, and text that had one comes out with two). Rust volis has the same
+    gap and no fix.
+69. **`onnxruntime==1.28.0` is a dependency** (for 68). Checked: on Windows the package carries
+    the runtime inside its own extension and loads no `onnxruntime.dll`, so sherpa-onnx's
+    bundled 1.28.2 is still the only one in the process, in either load order (voice, VAD and
+    the marking model all ran both ways; `doctor.ps1` passes). Adding it changed no other
+    locked version: `uv.lock` gained onnxruntime, flatbuffers and protobuf and nothing else.
+
+## Versions: what keeps a new machine the same as this one
+
+- **Python packages:** `uv.lock` pins every package to an exact version and hash, and
+  `setup.ps1` installs with `uv sync --locked`, which refuses to install anything else. A
+  package is only ever added by editing `pyproject.toml` and running `uv lock`, never by
+  `pip install` into the environment.
+- **Exact pins that matter:** `sherpa-onnx` and `sherpa-onnx-core` 1.13.8 (onnxruntime.dll
+  1.28.2, as Rust volis links), `onnxruntime` 1.28.0, `llama-cpp-python` 0.3.35 (the wheel in
+  `wheels\`; the GPU build in `wheels\cuda\` is made on the machine by `build-llama.ps1 -Cuda`
+  and needs CUDA Toolkit 12.9), torch 2.11.0+cu128 (carries the CUDA 12 runtime the GPU
+  llama.cpp loads), transformers 5.18.0, peft 0.21.1, Python 3.12.10, uv 0.11.x.
+- **Models are not pinned to a revision.** `fetch-models.ps1` takes each repo's current files,
+  and the sherpa-onnx archives and `libtashkeel_model.ort` from their current URLs. A
+  publisher who replaces a file changes what a new machine gets. For a deployment, copy the
+  `models\` folder from a machine that works rather than download again; that is also what
+  the copy-to-run folder (P12) does.
+- **Not carried by the repo:** the GPU wheel (344 MB, git-ignored) and `models\`. A new
+  development machine needs `build-llama.ps1 -Cuda` once, or the wheel copied into
+  `wheels\cuda\` before `setup.ps1`.
 
 ## P11 findings
 

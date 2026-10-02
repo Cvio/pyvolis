@@ -18,6 +18,13 @@ dependencies = [
     # Rust volis links) beside sherpa-onnx's extension. Without it sherpa-onnx
     # finds the old onnxruntime.dll in System32 and crashes.
     "sherpa-onnx-core==1.13.8",
+    # Runs the Arabic vowel-marking model (pyvolis/tashkeel.py), which sherpa-onnx
+    # leaves out of Piper's pipeline. Checked on Windows: this package has the
+    # runtime inside its own extension and loads no onnxruntime.dll, so
+    # sherpa-onnx's 1.28.2 stays the only one in the process (doctor.ps1's
+    # "no library is loaded twice"). Pinned to the same 1.28 line anyway;
+    # 1.28.2 itself is not published for Python.
+    "onnxruntime==1.28.0",
     "torch",
     # 5.4 is the first with CohereAsrForConditionalGeneration.
     "transformers>=5.4",

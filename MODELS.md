@@ -182,6 +182,17 @@ for the variety first. In shared machine mode each side has a **Spoken by** pick
 `models\vad\silero_vad.onnx` (2 MB), the voice activity detector, from the sherpa-onnx
 releases. The script fetches it. It must keep that name.
 
+## Optional: vowel marks for Arabic voices
+
+`models\tashkeel\libtashkeel_model.ort` (10 MB, MIT), from
+[rhasspy/piper-phonemize](https://github.com/rhasspy/piper-phonemize/tree/master/etc): the
+model Piper itself runs on Arabic text before pronouncing it, and that its Arabic voices were
+trained with. The script fetches it (group `use`). It is used only when "Add vowel marks to
+Arabic before it is spoken" is on (`[tts] diacritize` in `pyvolis.toml`). It adds about 0.3 s
+a sentence on the CPU. Its marks are good, not perfect ("مُحَطَّة" for "مَحَطَّة" in the test
+sentence): whether the voices sound better with it is for a listener to say.
+`logs\voices\*-plain.wav` and `*-vowel-marks.wav` are the same sentence both ways.
+
 ## Where each comes from
 
 | Model | Source |

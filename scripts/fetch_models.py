@@ -51,7 +51,7 @@ DEFAULT_GROUPS = ("use", "bigger")
 
 @dataclass
 class Model:
-    role: str  # vad | asr | mt | tts
+    role: str  # vad | asr | mt | tts | tashkeel
     folder: str  # under models/<role>/; "" for a file at the role's top level
     group: str
     what: str
@@ -86,6 +86,9 @@ LIST = [
     # ------------------------------------------------------------ what Rust volis runs on
     Model("vad", "", "use", "Silero VAD, the voice activity detector (required)",
           url=f"{SHERPA_ASR}/silero_vad.onnx", expect=("silero_vad.onnx",)),
+    Model("tashkeel", "", "use", "libtashkeel, the Arabic vowel-marking model Piper uses ([tts] diacritize)",
+          url="https://raw.githubusercontent.com/rhasspy/piper-phonemize/master/etc/libtashkeel_model.ort",
+          expect=("libtashkeel_model.ort",)),
     Model("mt", "", "use", "Qwen3 1.7B Q4_K_M, the translator Rust volis uses (the one .gguf at the top of mt)",
           repo="unsloth/Qwen3-1.7B-GGUF", file="Qwen3-1.7B-Q4_K_M.gguf", save_as="qwen3-1.7b-q4_k_m.gguf"),
     Model("asr", "parakeet-tdt-0.6b-v3-int8", "use", "Parakeet TDT 0.6B v3 int8 (sherpa-onnx, CPU)",

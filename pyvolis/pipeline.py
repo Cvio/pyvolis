@@ -42,7 +42,7 @@ from pathlib import Path
 import numpy as np
 
 from . import asr as asr_pkg
-from . import compare, models, paths, sentences
+from . import compare, models, paths, sentences, varieties
 from . import translate as tr
 from .asr import guards as guards_mod
 from .audio import SAMPLE_RATE
@@ -1349,6 +1349,9 @@ class SpeakThread:
         self.voices = [e for e in models.discover(paths.tts_dir(pipeline.root), models.Role.TTS)
                        if isinstance(e, models.Engine)]
         self.loaded: dict = {}
+        # Arabic vowel marks before the voice ([tts] diacritize); loaded when first needed.
+        self.diacritize = bool(pipeline.pyconfig.tts.diacritize)
+        self._tashkeel = None
         self.queue: queue.Queue = queue.Queue(SPEECH_QUEUE)
         self._thread = threading.Thread(target=self._run, name="pyvolis-speak", daemon=True)
         self._thread.start()
@@ -1361,6 +1364,24 @@ class SpeakThread:
         except Exception as e:
             log.warning("%s", e)
             self.pipeline.emit(Error(f"translations into {language} will not be spoken: {e}"))
+        self._marker(language)
+
+    def _marker(self, language: str):
+        """The vowel-marking model, for Arabic with [tts] diacritize on; else
+        None. If it can't be loaded that is said once, and Arabic is spoken
+        without marks."""
+        if not self.diacritize or varieties.language_of(language) != "ar":
+            return None
+        if self._tashkeel is None:
+            from . import tashkeel
+
+            try:
+                self._tashkeel = tashkeel.Tashkeel(paths.tashkeel_model_file(self.pipeline.root))
+            except Exception as e:
+                self.diacritize = False
+                log.warning("%s", e)
+                self.pipeline.emit(Error(f"Arabic will be spoken without vowel marks: {e}"))
+        return self._tashkeel
 
     def _voice(self, language: str, folder: str = ""):
         """The voice in `folder` (a shared-machine side's choice), or the
@@ -1423,6 +1444,9 @@ class SpeakThread:
             try:
                 voice = self._voice(language, folder)
                 began = time.perf_counter()
+                if (marker := self._marker(language)) is not None:
+                    text = marker.run(text)
+                    log.info("  %s with vowel marks (%d ms): %s", label, (time.perf_counter() - began) * 1000, text)
                 speech = voice.speak(text)
             except Exception as e:
                 log.warning("%s was not spoken: %s", label, e)

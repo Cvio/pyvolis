@@ -157,6 +157,11 @@ Three checkboxes change how it works:
   translations" both on, a short sentence (8 words or fewer) is not spoken until the next one
   has been heard, so it is spoken as revised. It waits 2 s at most, and not at all at the end
   of a turn; a long sentence never waits. Off by default: speech is never delayed.
+- **Add vowel marks to Arabic before it is spoken:** Arabic is written without its short
+  vowels, and the voices mispronounce some words without them. On, a small model predicts the
+  marks first, as Piper itself does; about 0.3 s more per sentence. It needs
+  `models\tashkeel\libtashkeel_model.ort` (`.\fetch-models.ps1 -Only tashkeel`). Only Arabic
+  is affected. Off by default.
 - **Join short fragments to what follows:** a few words with no full stop wait up to 1.5 s
   for the rest before they are translated.
 
@@ -221,6 +226,9 @@ revise_max_age_s = 30.0  # revision: never a sentence that ended longer ago than
 revise_max_words = 8     # revision: nor one longer than this
 hold_speech = false      # revision with the voice on: a short sentence waits for the next before it is spoken
 hold_speech_s = 2.0      # ...this long at most
+
+[tts]
+diacritize = false  # Arabic: predict the vowel marks before the voice pronounces the text
 
 [fragments]
 hold = true         # join a short fragment to what follows

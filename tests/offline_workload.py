@@ -23,6 +23,7 @@ import av  # noqa: E402, F401
 import huggingface_hub  # noqa: E402, F401
 import llama_cpp  # noqa: E402, F401
 import numpy  # noqa: E402, F401
+import onnxruntime  # noqa: E402, F401
 import peft  # noqa: E402, F401
 import PySide6.QtCore  # noqa: E402, F401
 import sherpa_onnx  # noqa: E402, F401
@@ -70,6 +71,12 @@ from pyvolis.translate import prompts  # noqa: E402
 translator = tr.load(tr.choose(root, ""), prompts.load(paths.prompts_dir(root)))
 print("translated:", translator.translate(tr.TranslationRequest("¿Dónde está la estación?", "es", "en")).text)
 translator.close()
+
+# The Arabic vowel-marking model (onnxruntime), when it is installed.
+from pyvolis import tashkeel  # noqa: E402
+
+if paths.tashkeel_model_file(root).is_file():
+    print("vowel marks:", len(tashkeel.Tashkeel(paths.tashkeel_model_file(root)).run("مرحبا")), "characters")
 
 # The guard itself: a direct connection out must be refused.
 import socket  # noqa: E402

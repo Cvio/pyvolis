@@ -249,6 +249,10 @@ class MainWindow(QMainWindow):
         self.speak = QCheckBox("Speak translations")
         self.half_duplex = QCheckBox("Half-duplex (mute the microphone while speaking)")
         self.half_duplex.setToolTip("Turn off only when using headphones: with speakers, pyvolis would hear itself.")
+        self.diacritize = QCheckBox("Add vowel marks to Arabic before it is spoken")
+        self.diacritize.setToolTip("Arabic is written without its short vowels, and the voices mispronounce some "
+                                   "words without them. On: a small model predicts the marks first, as Piper itself "
+                                   "does (about 0.3 s more per sentence). Only Arabic is affected.")
         self.compare = QCheckBox("Compare recognizers (no translation or speech)")
         self.streaming = QCheckBox("Show text while speaking (streaming)")
         self.streaming.setToolTip("Transcribes the growing utterance every second; words two passes agree on are "
@@ -340,6 +344,7 @@ class MainWindow(QMainWindow):
         form.addRow("Speakers", self.output_device)
         form.addRow(self.speak)
         form.addRow(self.half_duplex)
+        form.addRow(self.diacritize)
         form.addRow(self.compare)
         form.addRow(self.streaming)
         form.addRow(self.use_context)
@@ -360,8 +365,9 @@ class MainWindow(QMainWindow):
         self.locked_while_running = [self.source_lang, self.target_lang, self.recognizer, self.translator,
                                      self.input_device, self.output_device, self.speak, self.half_duplex,
                                      self.compare, self.streaming, self.use_context, self.revise,
-                                     self.hold_speech, self.hold_fragments, self.pair]
-        for widget in (self.streaming, self.use_context, self.revise, self.hold_speech, self.hold_fragments):
+                                     self.hold_speech, self.hold_fragments, self.pair, self.diacritize]
+        for widget in (self.streaming, self.use_context, self.revise, self.hold_speech, self.hold_fragments,
+                       self.diacritize):
             widget.toggled.connect(self.save)
         for widget in (self.use_context, self.revise, self.speak):
             widget.toggled.connect(lambda _on: self.refresh())
@@ -596,6 +602,7 @@ class MainWindow(QMainWindow):
         self.use_context.setChecked(self.pyconfig.context.mode in ("carry", "revision"))
         self.revise.setChecked(self.pyconfig.context.mode == "revision")
         self.hold_speech.setChecked(self.pyconfig.context.hold_speech)
+        self.diacritize.setChecked(self.pyconfig.tts.diacritize)
         self.hold_fragments.setChecked(self.pyconfig.fragments.hold)
         {CONTINUOUS: self.mode_continuous, SHARED: self.mode_shared}.get(self.config.mode.kind,
                                                                          self.mode_turn).setChecked(True)
@@ -757,6 +764,7 @@ class MainWindow(QMainWindow):
         self.pyconfig.asr.streaming = self.streaming.isChecked()
         self.pyconfig.context.mode = self.context_mode()
         self.pyconfig.context.hold_speech = self.hold_speech.isChecked()
+        self.pyconfig.tts.diacritize = self.diacritize.isChecked()
         self.pyconfig.fragments.hold = self.hold_fragments.isChecked()
         try:
             c.save_selections(paths.config_file(self.root))
