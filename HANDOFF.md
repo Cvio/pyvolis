@@ -98,7 +98,7 @@ Waiting on the user:
 - Hold-speech for revision: set aside by the user; to come back to.
 
 To build, when the user says:
-- **A performance panel** (the user's answers, 2026-10-03). A developer's tool, shipped to
+- **Done 2026-10-03, see difference 73:** a performance panel (the user's answers, 2026-10-03). A developer's tool, shipped to
   everyone (it can be switched off in code before a deployment). Purpose: know what pyvolis
   costs this machine, whether another model combination would leave room for another program
   (say, a video-over-IP messaging app), and whether something (more context, a long sentence)
@@ -447,6 +447,14 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     keep their names; folder names mean nothing to it. `whisper-large-v3-turbo` is now OpenAI's
     original, on the GPU: on the fixtures it scored Spanish CER 0.5% (int8: 0.6%) and Arabic 3.3%
     (int8: 5.2%), at RTF 0.33 and 0.22 against 0.41 and 0.52.
+73. **The performance panel** (View > Performance, `pyvolis/perf.py`, `gui/perf_panel.py`), at
+    the user's request; Rust volis has none. GPU figures from `nvidia-smi` once a second (a
+    short program that reads counters; no new library). Windows reports N/A for each process's
+    GPU memory, so pyvolis's share is the sum of its loaded models (`ModelLoaded`) and other
+    programs' is the rest. `Translated` events now carry `context_turns`, how many earlier
+    sentences went with the sentence. Measurements are kept in `logs\performance.json`.
+    Checked on the Spanish fixture in the real window: 14 sentences timed with their context,
+    the run recorded, and What if saying Gemma 4 12B with the Spanish Whisper doesn't fit 8 GB.
 
 ## P12 findings
 

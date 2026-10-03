@@ -197,6 +197,27 @@ from the next sentence and isn't saved.
 
 `--report --load` loads every model in turn and prints where it runs and the memory it takes.
 
+## The performance panel
+
+**View > Performance** (Ctrl+Shift+P) opens a panel beside the window; drag its title bar to
+pull it out as a window of its own. It is closed each time pyvolis starts.
+
+- **Now:** once a second, the GPU (memory, load, temperature, clock, power), system memory and
+  the CPU, each split into pyvolis, other programs and free, so you can see whether another
+  program (a video call, say) has room. A graph of the last five minutes with a tick for each
+  sentence; the models loaded and what each takes; and for the last sentences, the time to
+  recognise, translate (with how many earlier sentences went with it as context) and reach
+  the speakers. Amber or red when memory is nearly full or speech falls behind.
+- **What if:** choose another recognizer, translator and voice (and a second recognizer for
+  shared machine mode) and see the memory they would need, whether they fit this machine as
+  it is now, and their speed if they have been measured, all without loading anything.
+- **Benchmarks:** every run is measured and kept in `logs\performance.json`; the button runs a
+  recording through the What if choice. Estimates use what was measured here once a model has
+  been loaded, and its file sizes before that.
+
+GPU figures come from `nvidia-smi`, which comes with NVIDIA's driver. Windows doesn't report
+one program's GPU memory, so pyvolis's share is what its models take, and "others" is the rest.
+
 ## Translating a file
 
 ```powershell

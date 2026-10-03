@@ -190,6 +190,16 @@ class MainWindow(QMainWindow):
         menu = self.menuBar().addMenu("&File")
         menu.addAction(open_action)
         menu.addAction(export_action)
+        # The performance panel: closed at start, docked or pulled out as a window.
+        from .perf_panel import PerfPanel
+
+        self.perf_panel = PerfPanel(self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.perf_panel)
+        self.perf_panel.hide()
+        perf_action = self.perf_panel.toggleViewAction()
+        perf_action.setText("&Performance")
+        perf_action.setShortcut("Ctrl+Shift+P")
+        self.menuBar().addMenu("&View").addAction(perf_action)
 
         self.start_button = QPushButton("Start")
         self.start_button.clicked.connect(self.toggle)
@@ -847,6 +857,7 @@ class MainWindow(QMainWindow):
             changed = True
             self.collected.events.append(event)
             self.session.apply(event)
+            self.perf_panel.observe(event)
             if isinstance(event, ev.Stopped):
                 self._finished()
         if changed or self._redraw:

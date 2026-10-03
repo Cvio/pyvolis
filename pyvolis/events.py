@@ -243,6 +243,7 @@ class Translated(Event):
     translate_ms: int
     device: str  # "cpu" or "cuda"
     model: str
+    context_turns: int = 0  # earlier sentences sent with it (carry-forward context)
 
 
 @dataclass

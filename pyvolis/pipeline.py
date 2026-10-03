@@ -1295,7 +1295,8 @@ class TranslationThread:
             stats.translate_ms.append(ms)
             log.info("sentence %s\n  [%s] %s\n  [%s] %s\n  (%d ms to translate on the %s)", sentence.id, source,
                      sentence.text, target, result.text, ms, result.device.upper())
-            emit(Translated(sentence.id, result.text, target, ms, result.device, self.pipeline.translator_name))
+            emit(Translated(sentence.id, result.text, target, ms, result.device, self.pipeline.translator_name,
+                            len(request.context)))
             spoken = self.speaker is not None
             if self.peer is not None:
                 from .peer import Outgoing

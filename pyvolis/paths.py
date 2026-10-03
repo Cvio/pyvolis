@@ -95,6 +95,11 @@ def logs_dir(root: Path) -> Path:
     return root / "logs"
 
 
+def performance_file(root: Path) -> Path:
+    """`<root>/logs/performance.json` - model memory and run speeds measured here."""
+    return logs_dir(root) / "performance.json"
+
+
 def cache_dir(root: Path) -> Path:
     """`<root>/cache` - where a library that insists on caching is sent.
 
