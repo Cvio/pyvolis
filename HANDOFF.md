@@ -98,10 +98,26 @@ Waiting on the user:
 - Hold-speech for revision: set aside by the user; to come back to.
 
 To build, when the user says:
-- **A performance panel** in the window, opened and closed at will: what the loaded models use
-  now (GPU memory, system memory, CPU, GPU load, time per sentence), and what another
-  combination of recognizer, translator and voice would use before it is loaded. Questions put
-  to the user before design.
+- **A performance panel** (the user's answers, 2026-10-03). A developer's tool, shipped to
+  everyone (it can be switched off in code before a deployment). Purpose: know what pyvolis
+  costs this machine, whether another model combination would leave room for another program
+  (say, a video-over-IP messaging app), and whether something (more context, a long sentence)
+  makes the cost spike.
+  - *Now:* every number that bears on performance, updated about once a second: GPU memory per
+    model, pyvolis's total, other programs' and what is free; system memory the same way; CPU
+    and GPU load; GPU temperature and clock; and per sentence, the time to transcribe,
+    translate (with how much context it carried) and speak, and the delay from the end of
+    speech to the first sound. Amber and red when memory is nearly full or speech falls behind.
+  - *What if:* choose another recognizer, translator and voice and see, without loading
+    anything, the memory it would need, its speed where it has been measured, and whether it
+    fits this machine at all.
+  - *Measure:* "benchmark this combination" runs a test recording; results are kept so the
+    estimates improve.
+  - Closed each time the app starts. Works in every mode (live, file, shared).
+  - Proposed, for the user to confirm: a dockable panel (beside the window, or pulled out as
+    its own window, as browser developer tools are), not an overlay; tabs Now / What if /
+    Benchmarks; a short history graph with marks where sentences ended; the history exportable.
+    Per-process GPU memory needs NVIDIA's NVML library (`nvidia-ml-py`), a new dependency.
 - An English test recording with references, as the Spanish and Arabic ones.
 - A GPU/CPU choice for the translator in the window (now only `[translate] device`).
 
