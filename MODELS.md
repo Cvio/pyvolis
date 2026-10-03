@@ -81,8 +81,8 @@ Only the folders were renamed: the files inside keep their published names.
 | `parakeet-tdt-0.6b-v3-onnx-int8` | use | sherpa-onnx, CPU | 0.7 GB | 0.5 to 1.9% (clips) | no Arabic | not recorded | Rust volis's. Detects the language itself; spells numbers out. Identical output to Rust. |
 | `whisper-large-v3-turbo-onnx-int8` | use | sherpa-onnx, CPU | 1.0 GB | 0.6% / 2.1% (file) | 5.2% / 13.4% (file); no punctuation on any Arabic output | 0.41 (es), 0.52 (ar) | Rust volis's general recognizer, compressed to int8 ONNX. |
 | `whisper-large-v3-turbo` (OpenAI, as published) | use | transformers, GPU, about 1.6 GB | 1.6 GB | **0.5% / 2.1%** (file) | 3.3% / 12.0% (file) | 0.33 (es), 0.22 (ar) | The same model as the line above, uncompressed, on the GPU: the general recognizer to use, and the one for English. English not yet scored. |
-| Qwen3-ASR 1.7B (Q8) | tested | llama.cpp audio | 2.5 GB | | | | Tried by the user on another machine (2026-10-02): not good. No figures recorded. To be removed from the list. |
-| Voxtral Mini 3B (Q4_K_M) | tested | llama.cpp audio | 3.2 GB | | | | The same: tried by the user, not good, no figures. |
+| Qwen3-ASR 1.7B (Q8) | tested | llama.cpp audio | 2.5 GB | | | | Tried by the user on another machine (2026-10-02): not good so far. No figures recorded. Kept on the list for more testing. |
+| Voxtral Mini 3B (Q4_K_M) | removed | llama.cpp audio | 3.2 GB | | | | The same: tried by the user, not good, no figures. Taken off the download list; `.\fetch-model.ps1 ggml-org/Voxtral-Mini-3B-2507-GGUF -Role asr -Include "*Q4_K_M.gguf","mmproj-*.gguf"` fetches it. |
 | whisper-small | tested | transformers, GPU | 1.0 GB | not tested | 7.4% / 22.7% (file) | 0.13 | Clearly worse than everything above. Kept on the list only as the base of the adapter below. |
 | whisper-algerian-darja-small (LoRA on whisper-small) | tested | transformers + peft | 0.1 GB | | 12.6% / 43.1% (file) | 0.13 | Proves that a LoRA adapter loads and is applied. Worse than its base on this recording, as expected: the recording is Egyptian read speech, the adapter is for Algerian. |
 

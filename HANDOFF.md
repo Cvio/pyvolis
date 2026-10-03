@@ -86,6 +86,27 @@ Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   program. See "P12 findings". **The check on a second machine (no Python, no internet) is the
   user's to do.**
 
+## Open list (2026-10-02)
+
+Waiting on the user:
+- The built folder on a second Windows PC (rebuild first: `.\build.ps1`), and English
+  recognition with `whisper-large-v3-turbo` on the user's own voice.
+- Two machines paired: when a second Windows machine is available.
+- Vowel marks for Arabic: a linguist's opinion, or an automatic check (proposed: speak test
+  sentences with and without marks, transcribe the audio with the best Arabic recognizers, and
+  compare with the text; fewer errors = more intelligible).
+- Hold-speech for revision: set aside by the user; to come back to.
+
+To build, when the user says:
+- **A performance panel** in the window, opened and closed at will: what the loaded models use
+  now (GPU memory, system memory, CPU, GPU load, time per sentence), and what another
+  combination of recognizer, translator and voice would use before it is loaded. Questions put
+  to the user before design.
+- An English test recording with references, as the Spanish and Arabic ones.
+- A GPU/CPU choice for the translator in the window (now only `[translate] device`).
+
+Later: the rename to volis (and dropping the Rust-compatibility rules); Linux.
+
 ## Environment, as verified at P0
 
 - Python 3.12.10 (uv-managed), torch 2.11.0+cu128, transformers 5.18.0, sherpa-onnx 1.13.8 with

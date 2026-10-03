@@ -148,11 +148,9 @@ LIST = [
               "# Google's model card was tried and scored worse on the test recordings\n"
               "# (Arabic CER 3.4% against 1.5%, Spanish 1.7% against 1.1%). To try another:\n"
               '# prompt = "Transcribe the following speech segment in {language} into {language} text."\n')}),
-    Model("asr", "Qwen3-ASR-1.7B-GGUF", "tested", "Qwen3-ASR 1.7B Q8 (the user's trial: not good)",
+    Model("asr", "Qwen3-ASR-1.7B-GGUF", "tested", "Qwen3-ASR 1.7B (Q8)",
           repo="ggml-org/Qwen3-ASR-1.7B-GGUF", include=("*Q8_0.gguf",),
           write={"pyvolis.toml": GGUF_SPEECH + 'name = "Qwen3-ASR 1.7B (Q8)"\n' + SPEECH_LANGUAGES}),
-    Model("asr", "Voxtral-Mini-3B-2507-GGUF", "tested", "Voxtral Mini 3B Q4_K_M (the user's trial: not good)",
-          repo="ggml-org/Voxtral-Mini-3B-2507-GGUF", include=("*Q4_K_M.gguf", "mmproj-*.gguf")),
     Model("asr", "whisper-small", "tested", "Whisper small (transformers); the base of the LoRA adapter below",
           repo="openai/whisper-small"),
     Model("asr", "whisper-algerian-darja-small", "tested",
