@@ -244,3 +244,31 @@ def test_a_name_is_never_dialled(window):
     window.connect_peer("192.168.1.20")
     assert [str(a) for a in dialled] == ["192.168.1.20:47800"]
     window.pipeline = None
+
+
+def test_the_window_opens_with_every_new_box_ticked_and_their_dependencies_hold(app, monkeypatch):
+    """Ticked boxes in the settings, as a user's pyvolis.toml can have them, must
+    not trip a handler before the window is ready (it did: a refresh ran while
+    the window was being filled in, which only showed on the console)."""
+    import sys
+
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *e: errors.append(e))
+    py = PyvolisConfig()
+    py.context.mode, py.context.hold_speech, py.tts.diacritize = "revision", True, True
+    config = Config()
+    config.tts.enabled = True
+    w = MainWindow(paths.app_root(), config, py)
+    w.save = lambda: None
+    try:
+        assert errors == []
+        assert w.hold_speech.isChecked() and w.diacritize.isChecked()
+        assert w.hold_speech.isEnabled(), "revision and the voice are both on"
+        w.speak.setChecked(False)
+        assert not w.hold_speech.isEnabled(), "nothing to hold without the voice"
+        w.speak.setChecked(True)
+        w.revise.setChecked(False)
+        assert not w.hold_speech.isEnabled(), "nor without revision"
+        assert errors == []
+    finally:
+        w.close()

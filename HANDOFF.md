@@ -80,7 +80,11 @@ Last updated 2026-10-01. Read `CLAUDE.md` first, then `pyvolis-build.md`.
   **vowel marks for Arabic voices** (`[tts] diacritize`, off by default; differences 68, 69) and
   `fetch-model.ps1 -Role tts` were added after P11, at the user's request. Whether the marks
   make the voices sound better has not been judged by a listener.
-- Next: P12 (portability: the copy-to-run folder). Wait for the go-ahead.
+- **P12 done (on this machine):** `build.ps1` makes `dist\pyvolis\` with PyInstaller in
+  one-folder mode, which collected everything (no fallback to a shipped environment was
+  needed). `pyvolis.exe --doctor` checks the folder; `scripts\p12_check.py` runs the built
+  program. See "P12 findings". **The check on a second machine (no Python, no internet) is the
+  user's to do.**
 
 ## Environment, as verified at P0
 
@@ -391,6 +395,51 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
 - **Not carried by the repo:** the GPU wheel (344 MB, git-ignored) and `models\`. A new
   development machine needs `build-llama.ps1 -Cuda` once, or the wheel copied into
   `wheels\cuda\` before `setup.ps1`.
+70. **The built program is a console program**, as Rust volis is (it has no
+    `windows_subsystem` setting): a double-click opens the window with a console behind it, and
+    the same exe takes every command-line option. A window-only exe would need a second
+    build of the same folder for the command line.
+71. **`--doctor`**, new: the same checks as `doctor.ps1`, available in the built folder, where
+    there is no `doctor.ps1` and no environment. There it checks the folder's own libraries
+    instead of package records, and adds one check: every library loaded comes from the folder
+    or from Windows (Windows Defender's scanning library, which it puts into every process,
+    counts as Windows).
+
+## P12 findings
+
+- **PyInstaller 6.22.3, one-folder mode** (`pyvolis.spec`), in uv.lock's `build` group so a
+  build machine gets the same version. It collected torch with its CUDA libraries, PySide6,
+  sounddevice's PortAudio, PyAV, onnxruntime and transformers by its own hooks. What it can't
+  see is named in the spec: llama.cpp's and sherpa-onnx's DLLs (loaded by path), librosa's
+  `.pyi` stubs, sacrebleu's tokenizers; and transformers, torch and peft kept as `.py` too,
+  since they read their own source. No UPX: compressed DLLs are what scanners flag.
+- **Size:** 5.6 GB for the program (`_internal\`), plus `models\` (47 GB here, everything in
+  MODELS.md). Build time about 4 minutes.
+- **`scripts\p12_check.py`, on the built program** (Qwen3 1.7B translating, this machine's
+  `pyvolis.toml` otherwise, streaming on):
+
+  Three runs each; the times vary run to run by more than built and source differ.
+
+  | | built | from source |
+  |---|---|---|
+  | `--doctor` | all checks pass; onnxruntime 1.28.2 from the folder; GPU translator build; every library from the folder or Windows | |
+  | `--report` | 18 usable models, app root = the folder | |
+  | Spanish file, whisper-large-v3-turbo-es | CER 1.0%, chrF 59.3, 64 to 89 s | 64 to 76 s |
+  | Arabic file, Gemma 4 E4B hearing | CER 1.5%, chrF 59.8, 86 to 95 s | 86 to 108 s |
+  | network connections held, sampled every 0.2 s through every run | none | |
+
+  The same check passed with the folder moved out of the repository (`D:\AI_Data\...`, run
+  from `C:\`), and the window opened from there with no arguments, as a double-click does.
+- **Found by the built window, fixed:** the hold-speech box (difference 67) connected three
+  boxes to a refresh that ran while the window was still being filled in, when a user's
+  settings had them ticked; Qt printed the error to the console and the window opened anyway.
+  Fixed, with a test that fails without the fix.
+- With this machine's own settings (Gemma 4 12B translating, which doesn't fit on 8 GB beside a
+  recognizer) a file took 12 minutes instead of about one: the settings, not the packaging.
+- **Not done here (needs the user):** the folder zipped and unzipped on a Windows PC with no
+  Python and no internet; live mode there, and Resource Monitor watched for connections; a
+  machine whose security software might remove DLLs. A PC without an NVIDIA GPU is not a
+  target (the user's decision).
 
 ## P11 findings
 

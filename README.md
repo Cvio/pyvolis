@@ -4,7 +4,7 @@ Offline speech-to-speech translation, in Python: the same app as
 [Rust volis](../volis/README.md), plus models you can drop in straight from Hugging Face
 without converting them. It never uses the internet. Everything it needs lives in this folder.
 
-Status: milestone P11 of `pyvolis-build.md`. pyvolis has its window: live translation from the
+Status: milestone P12 of `pyvolis-build.md`, the last. pyvolis has its window: live translation from the
 microphone, taking turns or listening continuously, with voice output; file mode with a
 timeline and export; text shown while you speak, and translation that knows what was said
 before; two PCs can pair, with pyvolis or Rust volis at either end; and two people can share
@@ -29,6 +29,33 @@ Then:
 ```powershell
 .\.venv\Scripts\python.exe -m pyvolis --report
 ```
+
+## The copy-to-run folder
+
+To run pyvolis on another Windows PC, which needs no Python, no setup and no internet:
+
+```powershell
+.\build.ps1
+```
+
+This makes `dist\pyvolis\`: `pyvolis.exe`, the libraries it needs in `_internal\`, and
+`models\`, `config\`, `prompts\` and this machine's `volis.toml` and `pyvolis.toml` beside
+it. Copy or zip that whole folder; on the other PC, unzip it anywhere and double-click
+`pyvolis.exe`. The window opens, with a console window behind it, as Rust volis does: the same
+exe takes `--report`, `--doctor`, `--file` and the rest from a terminal.
+
+- **Size:** about 5.6 GB for the program (PyTorch with CUDA is most of it) plus the models
+  (47 GB here, with everything in `MODELS.md` installed). `.\build.ps1 -NoModels` builds the
+  program alone; put a `models\` folder beside it afterwards. On the same drive as the
+  repository, models are hard-linked into `dist\`, so they take no more disk until copied.
+- **The other PC needs an NVIDIA GPU** and its driver, when the GPU build of the translator is
+  installed here (`wheels\cuda\`). The CUDA libraries themselves are in the folder.
+- **First thing on a new PC:** `pyvolis.exe --doctor` (in a terminal, in the folder). It checks
+  every library is present, the right version, and loaded from the folder itself.
+- **Security software** that removes DLLs breaks the folder in the same way as the
+  environment; `--doctor` names what is missing. Ask for an exclusion for the folder.
+- `scripts\p12_check.py` runs the built program on the fixture recordings and watches it for
+  network connections.
 
 ## Models
 

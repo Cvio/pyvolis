@@ -51,6 +51,8 @@ pyvolis = "pyvolis.__main__:main"
 
 [dependency-groups]
 dev = ["pytest"]
+# build.ps1 only: the copy-to-run folder (P12). Not in the app itself.
+build = ["pyinstaller==6.22.3"]
 
 [build-system]
 requires = ["uv_build>=0.11.26,<0.12"]

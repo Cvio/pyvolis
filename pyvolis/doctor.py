@@ -14,6 +14,11 @@ Modelled on model-converter's `0_doctor.py`. In order:
   5. The CUDA runtime DLLs torch and llama.cpp each bring: which were loaded
      from where, and whether two copies of one library are loaded at once.
 
+In the built folder (`pyvolis.exe --doctor`, P12) check 1 is instead: every
+native library the app needs is in the folder; and a last check is added:
+every library loaded comes from the folder or from Windows itself, never from
+something installed on the machine (a CUDA Toolkit, another Python).
+
 Informational: other onnxruntime.dll copies on PATH or in System32, and
 McAfee/Trellix. Writes `logs/doctor.json` so two machines can be compared.
 Exit code 0 when every check passes, 1 otherwise.
@@ -191,6 +196,62 @@ def check_native_files(r: Report) -> None:
         r.info(f"could not read (in use or blocked): {label}")
 
 
+# The built folder's native libraries, relative to _internal\: each one is
+# loaded by path or by a library that is, so a missing one shows only when used.
+FOLDER_FILES = [
+    "sherpa_onnx/lib/_sherpa_onnx.cp312-win_amd64.pyd", "sherpa_onnx/lib/onnxruntime.dll",
+    "sherpa_onnx/lib/sherpa-onnx-c-api.dll",
+    "llama_cpp/lib/llama.dll", "llama_cpp/lib/ggml.dll", "llama_cpp/lib/ggml-base.dll",
+    "llama_cpp/lib/ggml-cpu.dll", "llama_cpp/lib/mtmd.dll",
+    "torch/lib/torch_cuda.dll", "torch/lib/cudart64_12.dll", "torch/lib/cublas64_12.dll",
+    "torch/lib/cublasLt64_12.dll", "torch/lib/cudnn64_9.dll",
+    "onnxruntime/capi/onnxruntime_pybind11_state.pyd",
+    "_sounddevice_data/portaudio-binaries/libportaudio64bit.dll",
+]
+
+
+def frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def check_folder_files(r: Report) -> None:
+    internal = Path(getattr(sys, "_MEIPASS", sys.prefix))
+    r.heading(f"Native libraries in the built folder ({internal})")
+    missing = [str(internal / f) for f in FOLDER_FILES if not (internal / f).is_file()]
+    gpu = (internal / "llama_cpp/lib/ggml-cuda.dll").is_file()
+    r.results["folder_files"] = {"checked": len(FOLDER_FILES), "missing": missing, "llama_gpu_build": gpu}
+    for path in missing:
+        r.fail("folder_files", f"missing: {path}")
+    if not missing:
+        r.ok(f"{len(FOLDER_FILES)} libraries present; translator build: {'GPU' if gpu else 'CPU only'}")
+    if missing:
+        r.info(f"If security software removed these, ask for an exclusion for {paths.app_root()} and copy "
+               "the folder again")
+
+
+def check_loaded_from_folder(r: Report) -> None:
+    """Every library in the process is the folder's own or Windows': the copy
+    loaded is the one shipped, and nothing depends on what else is installed."""
+    r.heading("Where every loaded library came from")
+    import onnxruntime  # noqa: F401 - after sherpa-onnx, as the app does
+    import sounddevice  # noqa: F401
+    import av  # noqa: F401
+
+    windows = [Path(os.environ.get("SystemRoot", r"C:\Windows"))]
+    # Windows' own antivirus puts its scanning library into every process.
+    for env in ("ProgramData", "ProgramFiles"):
+        if base := os.environ.get(env):
+            windows.append(Path(base) / "Microsoft" / "Windows Defender")
+            windows.append(Path(base) / "Windows Defender")
+    root = paths.app_root()
+    outside = sorted({p for p in loaded_modules() if not _inside(p, root) and not any(_inside(p, w) for w in windows)})
+    r.results["loaded_outside"] = outside
+    for path in outside:
+        r.fail("loaded_outside", f"loaded from outside the folder: {path} ({file_version(path)})")
+    if not outside:
+        r.ok(f"every library loaded is in {root} or in Windows")
+
+
 def check_sherpa(r: Report) -> None:
     r.heading(f"sherpa-onnx and its onnxruntime ({SHERPA_ORT_VERSION} expected)")
     if "onnxruntime" in sys.modules:
@@ -342,11 +403,13 @@ def other_onnxruntime_copies(r: Report) -> None:
 def main() -> int:
     r = Report()
     print(f"pyvolis doctor - Python {sys.version.split()[0]} at {sys.executable}")
-    check_native_files(r)
+    check_folder_files(r) if frozen() else check_native_files(r)
     check_sherpa(r)  # first: sherpa-onnx must be the first to load onnxruntime.dll
     check_torch(r)
     check_llama(r)
     check_cuda_dlls(r)
+    if frozen():
+        check_loaded_from_folder(r)
     other_onnxruntime_copies(r)
 
     out = paths.logs_dir(paths.app_root()) / "doctor.json"

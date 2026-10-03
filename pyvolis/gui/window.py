@@ -369,8 +369,9 @@ class MainWindow(QMainWindow):
         for widget in (self.streaming, self.use_context, self.revise, self.hold_speech, self.hold_fragments,
                        self.diacritize):
             widget.toggled.connect(self.save)
+        # Which boxes can be ticked depends on these; not while the window is still being filled in.
         for widget in (self.use_context, self.revise, self.speak):
-            widget.toggled.connect(lambda _on: self.refresh())
+            widget.toggled.connect(lambda _on: None if getattr(self, "_filling", True) else self.refresh())
         for widget in (self.mode_turn, self.mode_continuous, self.mode_shared, self.style_toggle, self.style_hold):
             widget.toggled.connect(self.mode_controls_changed)
         self._build_shared()

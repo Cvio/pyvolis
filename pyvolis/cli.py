@@ -28,6 +28,8 @@ COMMANDS:
     --report --load     Also load each usable model in turn and print where it
                         runs, its memory (GPU and system) and its load time
     --devices           List audio input and output devices and exit
+    --doctor            Check the libraries: all present, the right versions,
+                        each loaded from this folder (doctor.ps1 from source)
     --listen            Capture from the microphone and transcribe
     --translate <TEXT>  Translate one sentence and print it
     --print-prompt <TEXT>  Print the exact prompt the translator would get
@@ -106,6 +108,9 @@ def parse(args: list[str]) -> Command:
     if first == "--devices":
         _reject_extra(rest)
         return Command("devices")
+    if first == "--doctor":
+        _reject_extra(rest)
+        return Command("doctor")
     if first == "--listen":
         seconds, write_wav, compare = None, False, False
         options = iter(rest)
@@ -192,6 +197,10 @@ def run(args: list[str], root: Path) -> int:
 
     if command.name == "devices":
         return print_devices()
+    if command.name == "doctor":
+        from . import doctor
+
+        return doctor.main()
 
     config_path = paths.config_file(root)
     try:
