@@ -66,6 +66,10 @@ them as "clearly better", "about the same" or "clearly worse", not to the decima
 
 ## Recognizers (`models\asr\`)
 
+Folders ending in `-onnx-int8` are sherpa-onnx conversions, compressed to 8-bit and run on the
+CPU (as Rust volis runs them); the same model without that ending is the original, on the GPU.
+Only the folders were renamed: the files inside keep their published names.
+
 | Model | Group | Runs on | Disk | Spanish CER / WER | Arabic CER / WER | RTF | Notes |
 |---|---|---|---|---|---|---|---|
 | Gemma 4 E4B (Q4_K_M + audio encoder) | use | llama.cpp audio, GPU | 1.0 GB + the translator's file | 1.1% / 3.4% (file) | **1.5% / 6.5%** (file) | 0.08 | The best Arabic measured. The same file is the Gemma 4 translator; loaded as both it is in memory twice. No word timings. |
@@ -74,16 +78,17 @@ them as "clearly better", "about the same" or "clearly worse", not to the decima
 | whisper-large-v3-turbo-es (adriszmar) | use | transformers, GPU, 1.6 GB | 3.2 GB | **0.9% / 3.0%** (file) | Spanish only | 0.34 | The Spanish recognizer every check uses. |
 | whisper-large-v3-turbo-arabic-dialectal (oddadmix), safetensors | use | transformers, GPU, 1.6 GB | 3.2 GB | Arabic only | 3.7% (clips) | not recorded | Tuned on dialects; the clips are Standard Arabic, so this test undersells it. Not yet tested on dialect speech. |
 | MMS 1B (adapters: ar, en, fa, es) | use | transformers, GPU, 1.9 GB | 3.9 GB | 1.3% / 6.0% (file) | 5.8% (clips) | 0.04 | Never writes punctuation or capitals, so sentences are cut by pauses alone. The only one here with a Persian adapter besides Whisper. |
-| Parakeet TDT 0.6B v3 (int8) | use | sherpa-onnx, CPU | 0.7 GB | 0.5 to 1.9% (clips) | no Arabic | not recorded | Rust volis's. Detects the language itself; spells numbers out. Identical output to Rust. |
-| Whisper large-v3-turbo (int8) | use | sherpa-onnx, CPU | 1.0 GB | 0.5 to 1.9% (clips) | 5.2% (clips), no punctuation on any Arabic output | not recorded | Rust volis's general recognizer. |
+| `parakeet-tdt-0.6b-v3-onnx-int8` | use | sherpa-onnx, CPU | 0.7 GB | 0.5 to 1.9% (clips) | no Arabic | not recorded | Rust volis's. Detects the language itself; spells numbers out. Identical output to Rust. |
+| `whisper-large-v3-turbo-onnx-int8` | use | sherpa-onnx, CPU | 1.0 GB | 0.6% / 2.1% (file) | 5.2% / 13.4% (file); no punctuation on any Arabic output | 0.41 (es), 0.52 (ar) | Rust volis's general recognizer, compressed to int8 ONNX. |
+| `whisper-large-v3-turbo` (OpenAI, as published) | use | transformers, GPU, about 1.6 GB | 1.6 GB | **0.5% / 2.1%** (file) | 3.3% / 12.0% (file) | 0.33 (es), 0.22 (ar) | The same model as the line above, uncompressed, on the GPU: the general recognizer to use, and the one for English. English not yet scored. |
 | Qwen3-ASR 1.7B (Q8) | tested | llama.cpp audio | 2.5 GB | | | | Tried by the user on another machine (2026-10-02): not good. No figures recorded. To be removed from the list. |
 | Voxtral Mini 3B (Q4_K_M) | tested | llama.cpp audio | 3.2 GB | | | | The same: tried by the user, not good, no figures. |
 | whisper-small | tested | transformers, GPU | 1.0 GB | not tested | 7.4% / 22.7% (file) | 0.13 | Clearly worse than everything above. Kept on the list only as the base of the adapter below. |
 | whisper-algerian-darja-small (LoRA on whisper-small) | tested | transformers + peft | 0.1 GB | | 12.6% / 43.1% (file) | 0.13 | Proves that a LoRA adapter loads and is applied. Worse than its base on this recording, as expected: the recording is Egyptian read speech, the adapter is for Algerian. |
 
 Two more recognizers are in `models\asr\` on the development machine and are **not
-downloadable**: `whisper-large-v3-turbo-es-adriszmar` and
-`whisper-large-v3-turbo-arabic-dialectal` are the two fine-tunes above converted to int8 ONNX
+downloadable**: `whisper-large-v3-turbo-es-adriszmar-onnx-int8` and
+`whisper-large-v3-turbo-arabic-dialectal-onnx-int8` are the two fine-tunes above converted to int8 ONNX
 for Rust volis by [model-converter](../model-converter/README.md). pyvolis runs the originals
 instead, which score better (Arabic clips: 3.7% as published, 8.4% as int8 ONNX, which cuts
 sentences short). To make them, follow model-converter's README.

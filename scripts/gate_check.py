@@ -42,7 +42,7 @@ CABLE_IN, CABLE_OUT = "CABLE Input (VB-Audio Virtual Cable)", "CABLE Output (VB-
 def run(half_duplex: bool, clips: list[np.ndarray]) -> tuple[list[str], int]:
     root = paths.app_root()
     config = Config.parse(
-        '[asr]\nengine = "parakeet-tdt-0.6b-v3-int8"\n[languages]\nsource = "es"\ntarget = "en"\n'
+        '[asr]\nengine = "parakeet-tdt-0.6b-v3-onnx-int8"\n[languages]\nsource = "es"\ntarget = "en"\n'
         f'[audio]\ninput_device = "{CABLE_OUT}"\noutput_device = "{CABLE_IN}"\n'
         f"[tts]\nenabled = true\nhalf_duplex = {'true' if half_duplex else 'false'}\n"
     )

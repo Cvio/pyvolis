@@ -58,8 +58,8 @@ from pyvolis.pipeline import Options, Pipeline  # noqa: E402
 CABLE_IN = "CABLE Input (VB-Audio Virtual Cable)"
 RUNS = [
     ("Rust volis's models: Parakeet left, Spanish-tuned Whisper right",
-     "parakeet-tdt-0.6b-v3-int8", "whisper-large-v3-turbo-es-adriszmar"),
-    ("a downloaded model on the right", "parakeet-tdt-0.6b-v3-int8", "whisper-large-v3-turbo-es"),
+     "parakeet-tdt-0.6b-v3-onnx-int8", "whisper-large-v3-turbo-es-adriszmar-onnx-int8"),
+    ("a downloaded model on the right", "parakeet-tdt-0.6b-v3-onnx-int8", "whisper-large-v3-turbo-es"),
     ("downloaded models on both sides", "whisper-small", "whisper-large-v3-turbo-es"),
 ]
 

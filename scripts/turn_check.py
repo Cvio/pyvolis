@@ -43,7 +43,7 @@ CABLE_IN, CABLE_OUT = "CABLE Input (VB-Audio Virtual Cable)", "CABLE Output (VB-
 class Run:
     def __init__(self) -> None:
         config = Config.parse(
-            '[asr]\nengine = "parakeet-tdt-0.6b-v3-int8"\n[languages]\nsource = "es"\ntarget = "en"\n'
+            '[asr]\nengine = "parakeet-tdt-0.6b-v3-onnx-int8"\n[languages]\nsource = "es"\ntarget = "en"\n'
             '[mode]\nkind = "turn"\nturn_style = "toggle"\n'
             f'[audio]\ninput_device = "{CABLE_OUT}"\noutput_device = "{CABLE_IN}"\n'
             "[tts]\nenabled = true\nhalf_duplex = true\n"

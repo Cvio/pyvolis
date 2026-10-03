@@ -17,7 +17,7 @@ from pyvolis.asr import AsrResult
 from pyvolis.config import Config, PyvolisConfig
 from pyvolis.pipeline import Options, Pipeline
 
-LEFT_ASR, RIGHT_ASR = "parakeet-tdt-0.6b-v3-int8", "whisper-large-v3-turbo"
+LEFT_ASR, RIGHT_ASR = "parakeet-tdt-0.6b-v3-onnx-int8", "whisper-large-v3-turbo-onnx-int8"
 
 
 class Hears:

@@ -70,7 +70,7 @@ class RustWindow:
         config.mode.kind = "continuous"  # hears the cable without a turn key; the floor still answers
         config.audio.input_device = CABLE_OUT
         config.tts.enabled = False
-        config.asr.engine = "parakeet-tdt-0.6b-v3-int8"
+        config.asr.engine = "parakeet-tdt-0.6b-v3-onnx-int8"
         config.peer.enabled = True
         config.peer.peer_addr = f"127.0.0.1:{OUR_PORT}"
         config.save_selections(WORK / "volis.toml")

@@ -91,19 +91,19 @@ LIST = [
           expect=("libtashkeel_model.ort",)),
     Model("mt", "", "use", "Qwen3 1.7B Q4_K_M, the translator Rust volis uses (the one .gguf at the top of mt)",
           repo="unsloth/Qwen3-1.7B-GGUF", file="Qwen3-1.7B-Q4_K_M.gguf", save_as="qwen3-1.7b-q4_k_m.gguf"),
-    Model("asr", "parakeet-tdt-0.6b-v3-int8", "use", "Parakeet TDT 0.6B v3 int8 (sherpa-onnx, CPU)",
+    Model("asr", "parakeet-tdt-0.6b-v3-onnx-int8", "use", "Parakeet TDT 0.6B v3, ONNX int8 (sherpa-onnx, CPU)",
           url=f"{SHERPA_ASR}/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
           members=("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"),
           expect=("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"),
-          write={"engine.toml": 'name = "Parakeet TDT 0.6B v3 (int8)"\nkind = "segment"\nbackend = "nemo_transducer"\n'
+          write={"engine.toml": 'name = "Parakeet TDT 0.6B v3 (ONNX int8, CPU)"\nkind = "segment"\nbackend = "nemo_transducer"\n'
                                 'languages = ["es", "en", "de", "fr", "it", "pt", "nl", "pl", "ru"]\n\n[files]\n'
                                 'encoder = "encoder.int8.onnx"\ndecoder = "decoder.int8.onnx"\n'
                                 'joiner  = "joiner.int8.onnx"\ntokens  = "tokens.txt"\n'}),
-    Model("asr", "whisper-large-v3-turbo", "use", "Whisper large-v3-turbo int8 (sherpa-onnx, CPU)",
+    Model("asr", "whisper-large-v3-turbo-onnx-int8", "use", "Whisper large-v3-turbo, ONNX int8 (sherpa-onnx, CPU)",
           url=f"{SHERPA_ASR}/sherpa-onnx-whisper-turbo.tar.bz2",
           members=("turbo-encoder.int8.onnx", "turbo-decoder.int8.onnx", "turbo-tokens.txt"),
           expect=("turbo-encoder.int8.onnx", "turbo-decoder.int8.onnx", "turbo-tokens.txt"),
-          write={"engine.toml": 'name = "Whisper large-v3-turbo (int8)"\nkind = "segment"\nbackend = "whisper"\n'
+          write={"engine.toml": 'name = "Whisper large-v3-turbo (ONNX int8, CPU)"\nkind = "segment"\nbackend = "whisper"\n'
                                 'languages = ["es", "en", "de", "fr", "it", "pt", "nl", "pl", "ru", "ar", "fa"]\n\n'
                                 '[files]\nencoder = "turbo-encoder.int8.onnx"\ndecoder = "turbo-decoder.int8.onnx"\n'
                                 'tokens  = "turbo-tokens.txt"\n'}),
@@ -121,6 +121,8 @@ LIST = [
           write={"engine.toml": piper_engine("Piper es_MX claude (high)", "es", "es_MX-claude-high.onnx", "es-MX")}),
 
     # ------------------------------------------------------------ recognizers, pyvolis only
+    Model("asr", "whisper-large-v3-turbo", "use", "Whisper large-v3-turbo as published, all languages (transformers, GPU)",
+          repo="openai/whisper-large-v3-turbo"),
     Model("asr", "whisper-large-v3-turbo-es", "use", "Whisper large-v3-turbo tuned for Spanish (transformers, GPU)",
           repo="adriszmar/whisper-large-v3-turbo-es"),
     Model("asr", "whisper-large-v3-turbo-arabic-dialectal-hf", "use",

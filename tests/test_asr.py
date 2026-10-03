@@ -37,8 +37,8 @@ def engine(name: str) -> models.Engine:
 @pytest.mark.parametrize(
     "name,fixture,language,expect",
     [
-        ("parakeet-tdt-0.6b-v3-int8", "es_419", "es", "viajeros"),
-        ("whisper-large-v3-turbo", "es_419", "es-MX", "viajeros"),
+        ("parakeet-tdt-0.6b-v3-onnx-int8", "es_419", "es", "viajeros"),
+        ("whisper-large-v3-turbo-onnx-int8", "es_419", "es-MX", "viajeros"),
         ("whisper-large-v3-turbo-es", "es_419", "es-MX", "viajeros"),
         ("mms-1b-all", "es_419", "es", "viajeros"),
         ("cohere-transcribe-arabic-07-2026", "ar_eg", "ar", "المحيط"),
@@ -88,7 +88,7 @@ def test_the_pipeline_turns_a_file_into_final_transcripts():
     """A fixture through the whole pipeline (VAD, pre-roll, recognizer,
     guards) from a file source, as the microphone would feed it."""
     audio, _ = clip("es_419")
-    name = "parakeet-tdt-0.6b-v3-int8"
+    name = "parakeet-tdt-0.6b-v3-onnx-int8"
     engine(name)
     config = Config.parse(f'[asr]\nengine = "{name}"\n[languages]\nsource = "es"\n')
     events: queue.Queue = queue.Queue()
@@ -102,7 +102,7 @@ def test_the_pipeline_turns_a_file_into_final_transcripts():
 def test_silence_and_noise_produce_no_text():
     """P2's guard check: silence, hiss, loud bursts (a door, a knock) and mains
     hum give no text at all."""
-    name = "whisper-large-v3-turbo"
+    name = "whisper-large-v3-turbo-onnx-int8"
     engine(name)
     sr = 16000
     rng = np.random.default_rng(7)
@@ -122,7 +122,7 @@ def test_a_hallucination_is_dropped_and_reported_with_its_reason(monkeypatch, ca
     """A recognizer that answers real speech with a stock phrase: the pipeline
     drops it, sends a Dropped event with the text and reason, and logs it."""
     audio, _ = clip("es_419")
-    name = "parakeet-tdt-0.6b-v3-int8"
+    name = "parakeet-tdt-0.6b-v3-onnx-int8"
     engine(name)
 
     class Invents:

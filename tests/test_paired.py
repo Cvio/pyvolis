@@ -94,7 +94,7 @@ class Upper:
 class Running:
     def __init__(self, monkeypatch, name, speaks, sends, port, audio, text, context="revision"):
         config = Config.parse(
-            f'[asr]\nengine = "parakeet-tdt-0.6b-v3-int8"\n[languages]\nsource = "{speaks}"\ntarget = "{sends}"\n'
+            f'[asr]\nengine = "parakeet-tdt-0.6b-v3-onnx-int8"\n[languages]\nsource = "{speaks}"\ntarget = "{sends}"\n'
             f'[mode]\nkind = "turn"\n[tts]\nenabled = false\n'
             f'[peer]\nenabled = true\nlisten_addr = "127.0.0.1:{port}"\ndisplay_name = "{name}"\ndiscovery = false\n')
         self.events: queue.Queue = queue.Queue()

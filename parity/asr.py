@@ -89,7 +89,7 @@ class Rust:
         config.tts.enabled = False
         if not (REPO / "models" / "asr" / config.asr.engine / "engine.toml").is_file():
             # The user's recognizer is one only pyvolis runs; Rust gets one it has.
-            config.asr.engine = "parakeet-tdt-0.6b-v3-int8"
+            config.asr.engine = "parakeet-tdt-0.6b-v3-onnx-int8"
         config.save_selections(WORK / "volis.toml")
         self.selected = config.asr.engine
         env = dict(os.environ, RUST_LOG="info", NO_COLOR="1")

@@ -144,7 +144,7 @@ def test_the_pipeline_streams_commits_sentences_early_and_ends_consistent(monkey
             pass
 
     monkeypatch.setattr(asr, "load", lambda engine: TwoWordsASecond())
-    config = Config.parse('[asr]\nengine = "parakeet-tdt-0.6b-v3-int8"\n[languages]\nsource = "es"\n')
+    config = Config.parse('[asr]\nengine = "parakeet-tdt-0.6b-v3-onnx-int8"\n[languages]\nsource = "es"\n')
     events: queue.Queue = queue.Queue()
     silence = np.zeros(SECOND, np.float32)
     source = ArraySource(np.concatenate([silence, clip, silence]))
@@ -203,7 +203,7 @@ def test_segment_mode_makes_one_pass_and_shows_nothing_provisional(monkeypatch):
     except SystemExit:
         pytest.skip("needs tests/fetch-fixtures.ps1")
     monkeypatch.setattr(asr, "load", lambda engine: Counts())
-    config = Config.parse('[asr]\nengine = "parakeet-tdt-0.6b-v3-int8"\n[languages]\nsource = "es"\n')
+    config = Config.parse('[asr]\nengine = "parakeet-tdt-0.6b-v3-onnx-int8"\n[languages]\nsource = "es"\n')
     events: queue.Queue = queue.Queue()
     out = run_to_end(Pipeline(paths.app_root(), config, Options(translate=False, streaming=False), events,
                               ArraySource(audio_in), PyvolisConfig()), events)

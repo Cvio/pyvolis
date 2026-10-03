@@ -144,7 +144,7 @@ def main() -> int:
 
     print("\nA volis.toml saved by pyvolis, loaded by Rust volis")
     config, _ = Config.load(WORK / "volis.toml")
-    config.asr.engine = "parakeet-tdt-0.6b-v3-int8"
+    config.asr.engine = "parakeet-tdt-0.6b-v3-onnx-int8"
     config.languages.source, config.languages.target = "es-MX", "en-US"
     config.audio.input_device = "Microphone (parity test)"
     config.mode.kind, config.mode.turn_style = "continuous", "hold"
@@ -152,11 +152,11 @@ def main() -> int:
     config.peer.enabled, config.peer.peer_addr = True, "192.168.50.2:47800"
     config.shared.left_language, config.shared.right_language = "ar-IQ", "en"
     config.shared.left_voice, config.shared.right_voice = "vits-piper-en_US-lessac-medium", ""
-    config.shared.left_asr = "whisper-large-v3-turbo-arabic-dialectal"
+    config.shared.left_asr = "whisper-large-v3-turbo-arabic-dialectal-onnx-int8"
     config.save_selections(WORK / "volis.toml")
     code, out = run([str(WORK / exe.name), "--report"], WORK)
     loaded = any("config:" in line and "volis.toml" in line for line in out)
-    if code == 0 and loaded and any('"parakeet-tdt-0.6b-v3-int8"' in line for line in out):
+    if code == 0 and loaded and any('"parakeet-tdt-0.6b-v3-onnx-int8"' in line for line in out):
         print("  Rust loaded it, and reads [asr].engine as pyvolis wrote it")
     else:
         problems.append(f"Rust volis did not accept pyvolis's volis.toml (exit {code}):\n" + "\n".join(out[-15:]))

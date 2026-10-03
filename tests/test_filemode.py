@@ -117,7 +117,7 @@ def test_a_fixture_file_runs_end_to_end(tmp_path):
     out = tmp_path / "out"
     done = subprocess.run(
         [sys.executable, "-m", "pyvolis", "--file", str(audio), "--from", "es", "--to", "en",
-         "--asr", "parakeet-tdt-0.6b-v3-int8", "--fast", "--export", str(out)],
+         "--asr", "parakeet-tdt-0.6b-v3-onnx-int8", "--fast", "--export", str(out)],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900,
     )
     assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]

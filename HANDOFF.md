@@ -404,6 +404,12 @@ Rust's. `models\asr\whisper-small\` is a hard link to model-converter's download
     instead of package records, and adds one check: every library loaded comes from the folder
     or from Windows (Windows Defender's scanning library, which it puts into every process,
     counts as Windows).
+72. **The sherpa-onnx recognizer folders end in `-onnx-int8`** (`whisper-large-v3-turbo-onnx-int8`,
+    `parakeet-tdt-0.6b-v3-onnx-int8`, and the two converted fine-tunes), at the user's request, so
+    the picker shows which recognizers are compressed ONNX on the CPU. Rust volis's own folders
+    keep their names; folder names mean nothing to it. `whisper-large-v3-turbo` is now OpenAI's
+    original, on the GPU: on the fixtures it scored Spanish CER 0.5% (int8: 0.6%) and Arabic 3.3%
+    (int8: 5.2%), at RTF 0.33 and 0.22 against 0.41 and 0.52.
 
 ## P12 findings
 
